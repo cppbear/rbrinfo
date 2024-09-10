@@ -3,6 +3,9 @@ name = "rbrinfo"
 version = "0.1.0"
 edition = "2021"
 
+[package.metadata.rust-analyzer]
+rustc_private = true
+
 [[bin]]
 name = "cargo-rbrinfo"
 
