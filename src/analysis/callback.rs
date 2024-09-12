@@ -339,6 +339,11 @@ impl FnBlocks<'_> {
         }
     }
 
+    fn iterative_dfs(&mut self) {
+        let mut stack: Vec<u32> = Vec::new();
+        stack.push(0);
+    }
+
     fn dump_cfg_to_dot(&self) {
         let mut graph = DiGraph::<String, String>::new();
 
