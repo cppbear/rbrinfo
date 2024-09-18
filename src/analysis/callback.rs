@@ -5,6 +5,7 @@ use petgraph::dot::Dot;
 use petgraph::graph::DiGraph;
 use petgraph::prelude::*;
 use regex::Regex;
+use rustc_data_structures::graph::StartNode;
 use rustc_driver::Compilation;
 use rustc_hir::def;
 use rustc_interface::interface;
@@ -16,6 +17,7 @@ use rustc_middle::mir::Terminator;
 use rustc_middle::mir::TerminatorKind;
 use rustc_middle::ty::TyCtxt;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::io::BufRead;
@@ -104,8 +106,30 @@ struct MyBlock<'a> {
 }
 
 #[derive(Clone, Debug)]
+struct DFSCxt {
+    block: BasicBlock,
+    path: Vec<BasicBlock>,
+    branches: HashSet<(BasicBlock, BasicBlock)>,
+}
+
+impl DFSCxt {
+    fn new(
+        block: BasicBlock,
+        path: Vec<BasicBlock>,
+        branches: HashSet<(BasicBlock, BasicBlock)>,
+    ) -> Self {
+        Self {
+            block,
+            path,
+            branches,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct FnBlocks<'a> {
     fn_name: String,
+    start_node: BasicBlock,
     blocks: Vec<MyBlock<'a>>,
     cond_chains: Vec<Vec<(String, String)>>,
 }
@@ -340,8 +364,51 @@ impl FnBlocks<'_> {
     }
 
     fn iterative_dfs(&mut self) {
-        let mut stack: Vec<u32> = Vec::new();
-        stack.push(0);
+        println!("-----------iterative_dfs------------");
+        let mut stack: Vec<DFSCxt> = Vec::new();
+        let dfs_cxt = DFSCxt::new(self.start_node, vec![self.start_node], HashSet::new());
+        stack.push(dfs_cxt);
+        while !stack.is_empty() {
+            let dfs_cxt = stack.pop().unwrap();
+            let DFSCxt {
+                block,
+                path,
+                branches,
+            } = dfs_cxt;
+            let block_index = block.index();
+            println!("Block: {:?}", block_index);
+            println!("Path: {:?}", path);
+            let block = &self.blocks[block_index];
+            if block.suc_blocks.is_empty() {
+                continue;
+            } else if let Terminator {
+                kind: TerminatorKind::SwitchInt { targets, .. },
+                ..
+            } = block.terminator.clone()
+            {
+                for (value, target) in targets.iter() {
+                    let mut path = path.clone();
+                    let mut branches = branches.clone();
+                    if branches.insert((block.block_name, target)) {
+                        path.push(target);
+                        stack.push(DFSCxt::new(target, path, branches));
+                    } else {
+                    }
+                }
+                let mut path = path.clone();
+                let mut branches = branches.clone();
+                if branches.insert((block.block_name, targets.otherwise())) {
+                    path.push(targets.otherwise());
+                    stack.push(DFSCxt::new(targets.otherwise(), path, branches));
+                } else {
+                }
+            } else {
+                let mut path = path.clone();
+                path.push(block.suc_blocks[0]);
+                stack.push(DFSCxt::new(block.suc_blocks[0], path, branches));
+            }
+        }
+        println!("-----------iterative_dfs------------");
     }
 
     fn dump_cfg_to_dot(&self) {
@@ -431,6 +498,7 @@ impl MirCheckerCallbacks {
                     // println!("{:#?}", fn_blocks);
                     let a_fn_block = FnBlocks {
                         fn_name: fn_name.clone(),
+                        start_node: mir2.basic_blocks.start_node(),
                         blocks: fn_blocks.clone(),
                         cond_chains: Vec::new(),
                     };
@@ -447,6 +515,7 @@ impl MirCheckerCallbacks {
         }
         for mut block in ret {
             block.my_cout();
+            block.iterative_dfs();
             block.cond_chain_cout();
             // block.dump_cfg_to_dot();
         }
