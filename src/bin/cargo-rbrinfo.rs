@@ -137,6 +137,11 @@ fn main() {
         // This arm is executed when `cargo-mir-checker` runs `cargo rustc` with the `RUSTC_WRAPPER` env var set to itself:
         // dependencies get dispatched to `rustc`, the final library/binary to `mir-checker`.
         inside_cargo_rustc();
+    } else if let Some(
+        "/Users/chubei/.rustup/toolchains/nightly-2024-07-21-aarch64-apple-darwin/bin/rustc",
+    ) = std::env::args().nth(1).as_ref().map(AsRef::as_ref)
+    {
+        inside_cargo_rustc();
     } else {
         show_error(
             "`cargo-rbrinfo` must be called with either `cargo-rbrinfo` or `/home/chubei/.rustup/toolchains/nightly-2024-07-21-x86_64-unknown-linux-gnu/bin/rustc` as first argument.".to_string(),

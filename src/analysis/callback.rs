@@ -5,6 +5,7 @@ use petgraph::dot::Dot;
 use petgraph::graph::DiGraph;
 use petgraph::prelude::*;
 use regex::Regex;
+use rustc_data_structures::graph::dominators::Dominators;
 use rustc_data_structures::graph::StartNode;
 use rustc_driver::Compilation;
 use rustc_hir::def;
@@ -110,6 +111,7 @@ struct DFSCxt {
     block: BasicBlock,
     path: Vec<BasicBlock>,
     branches: HashSet<(BasicBlock, BasicBlock)>,
+    loop_paths: Vec<Vec<BasicBlock>>,
 }
 
 impl DFSCxt {
@@ -117,11 +119,60 @@ impl DFSCxt {
         block: BasicBlock,
         path: Vec<BasicBlock>,
         branches: HashSet<(BasicBlock, BasicBlock)>,
+        loop_paths: Vec<Vec<BasicBlock>>,
     ) -> Self {
         Self {
             block,
             path,
             branches,
+            loop_paths,
+        }
+    }
+}
+
+fn find_second_last_index<T: PartialEq>(vec: &[T], target: T) -> Option<usize> {
+    let mut count = 0;
+    let len = vec.len();
+
+    for i in (0..len).rev() {
+        if vec[i] == target {
+            count += 1;
+            if count == 2 {
+                return Some(i);
+            }
+        }
+    }
+
+    None
+}
+
+fn count_subsequence<T: PartialEq>(vec: &Vec<T>, subseq: &Vec<T>) -> usize {
+    if subseq.is_empty() || vec.len() < subseq.len() {
+        return 0;
+    }
+
+    let mut count = 0;
+    for window in vec.windows(subseq.len()) {
+        if window == subseq {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn remove_subsequence<T: PartialEq>(vec: &mut Vec<T>, subseq: &Vec<T>) {
+    if subseq.is_empty() || subseq.len() > vec.len() {
+        return;
+    }
+
+    let seq_len = subseq.len();
+    let mut i = 0;
+
+    while vec.len() > seq_len && i <= vec.len() - seq_len {
+        if &vec[i..i + seq_len] == subseq {
+            vec.drain(i..i + seq_len);
+        } else {
+            i += 1;
         }
     }
 }
@@ -131,6 +182,7 @@ struct FnBlocks<'a> {
     fn_name: String,
     start_node: BasicBlock,
     blocks: Vec<MyBlock<'a>>,
+    dominators: Dominators<BasicBlock>,
     cond_chains: Vec<Vec<(String, String)>>,
 }
 
@@ -366,21 +418,58 @@ impl FnBlocks<'_> {
     fn iterative_dfs(&mut self) {
         println!("-----------iterative_dfs------------");
         let mut stack: Vec<DFSCxt> = Vec::new();
-        let dfs_cxt = DFSCxt::new(self.start_node, vec![self.start_node], HashSet::new());
+        let dfs_cxt = DFSCxt::new(
+            self.start_node,
+            vec![self.start_node],
+            HashSet::new(),
+            Vec::new(),
+        );
         stack.push(dfs_cxt);
-        while !stack.is_empty() {
+        let mut a = 0;
+        while !stack.is_empty()
+        // && a < 10
+        {
+            a += 1;
             let dfs_cxt = stack.pop().unwrap();
             let DFSCxt {
                 block,
                 path,
                 branches,
+                mut loop_paths,
             } = dfs_cxt;
             let block_index = block.index();
-            println!("Block: {:?}", block_index);
-            println!("Path: {:?}", path);
+            // println!("Block: {:?}", block_index);
+            // println!("Path: {:?}", path);
+            // println!("Loop Path: {:?}", loop_paths);
             let block = &self.blocks[block_index];
-            if block.suc_blocks.is_empty() {
+
+            let mut dup_loop = false;
+            let mut path2 = path.clone();
+            for loop_path in &loop_paths {
+                let count = count_subsequence(&path2, loop_path);
+                // println!("count: {:?}", count);
+                if count > 1 {
+                    dup_loop = true;
+                }
+                remove_subsequence(&mut path2, loop_path);
+            }
+            if dup_loop {
                 continue;
+            }
+
+            let size = path.len();
+            if size > 1 && self.dominators.dominates(path[size - 1], path[size - 2]) {
+                let index = path[..size - 1]
+                    .iter()
+                    .rposition(|&x| x == block.block_name)
+                    .unwrap();
+                loop_paths.push(path[index..size - 1].to_vec());
+                // println!("Loop Path: {:?}", loop_path);
+            }
+
+            if block.suc_blocks.is_empty() {
+                // continue;
+                println!("Final Path: {:?}", path);
             } else if let Terminator {
                 kind: TerminatorKind::SwitchInt { targets, .. },
                 ..
@@ -391,7 +480,7 @@ impl FnBlocks<'_> {
                     let mut branches = branches.clone();
                     if branches.insert((block.block_name, target)) {
                         path.push(target);
-                        stack.push(DFSCxt::new(target, path, branches));
+                        stack.push(DFSCxt::new(target, path, branches, loop_paths.clone()));
                     } else {
                     }
                 }
@@ -399,13 +488,23 @@ impl FnBlocks<'_> {
                 let mut branches = branches.clone();
                 if branches.insert((block.block_name, targets.otherwise())) {
                     path.push(targets.otherwise());
-                    stack.push(DFSCxt::new(targets.otherwise(), path, branches));
+                    stack.push(DFSCxt::new(
+                        targets.otherwise(),
+                        path,
+                        branches,
+                        loop_paths.clone(),
+                    ));
                 } else {
                 }
             } else {
                 let mut path = path.clone();
                 path.push(block.suc_blocks[0]);
-                stack.push(DFSCxt::new(block.suc_blocks[0], path, branches));
+                stack.push(DFSCxt::new(
+                    block.suc_blocks[0],
+                    path,
+                    branches,
+                    loop_paths.clone(),
+                ));
             }
         }
         println!("-----------iterative_dfs------------");
@@ -415,10 +514,11 @@ impl FnBlocks<'_> {
         let mut graph = DiGraph::<String, String>::new();
 
         for block in self.blocks.clone() {
-            let label = format!(
-                "{:?}\n{:?}\n{:?}",
-                block.block_name, block.statements, block.terminator
-            );
+            // let label = format!(
+            //     "{:?}\n{:#?}\n{:#?}",
+            //     block.block_name, block.statements, block.terminator
+            // );
+            let label = format!("{:?}", block.block_name);
             graph.add_node(label);
         }
 
@@ -435,7 +535,7 @@ impl FnBlocks<'_> {
         // 用Graphviz Dot格式输出并写入文件
         let dot = Dot::with_config(&graph, &[Config::EdgeNoLabel]);
         let mut file = File::create(format!("{}_cfg.dot", self.fn_name)).unwrap();
-        writeln!(file, "{:?}", dot).unwrap();
+        writeln!(file, "{:#}", dot).unwrap();
     }
 }
 
@@ -500,6 +600,7 @@ impl MirCheckerCallbacks {
                         fn_name: fn_name.clone(),
                         start_node: mir2.basic_blocks.start_node(),
                         blocks: fn_blocks.clone(),
+                        dominators: mir2.basic_blocks.dominators().clone(),
                         cond_chains: Vec::new(),
                     };
                     ret.push(a_fn_block);
@@ -515,9 +616,9 @@ impl MirCheckerCallbacks {
         }
         for mut block in ret {
             block.my_cout();
+            block.dump_cfg_to_dot();
             block.iterative_dfs();
             block.cond_chain_cout();
-            // block.dump_cfg_to_dot();
         }
     }
 }
