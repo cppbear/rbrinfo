@@ -82,6 +82,17 @@ impl rustc_driver::Callbacks for MirCheckerCallbacks {
         info!("Source file: {}", self.source_name);
     }
 
+    fn after_crate_root_parsing<'tcx>(
+        &mut self,
+        _compiler: &interface::Compiler,
+        _queries: &'tcx Queries<'tcx>,
+    ) -> Compilation {
+        let query_result = _queries.parse().unwrap();
+        let krate = query_result.borrow().clone();
+        println!("{:#?}", krate);
+        Compilation::Continue
+    }
+
     /// Called after analysis. Return value instructs the compiler whether to
     /// continue the compilation afterwards (defaults to `Compilation::Continue`)
     fn after_analysis<'compiler, 'tcx>(
@@ -287,7 +298,7 @@ impl FnBlocks<'_> {
                 {
                     let mut new_cond_chain = cond_chain.clone();
                     let span = format!("{:?}", terminator.source_info.span);
-                    // println!("{}", span);
+                    println!("span: {}", span);
                     let re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
                     if let Some(caps) = re.captures(&span) {
                         let file_path = caps.get(1).map_or("", |m| m.as_str());
@@ -555,6 +566,9 @@ impl MirCheckerCallbacks {
                     let fn_name = format!("{:?}", item.to_def_id());
                     let mut fn_blocks: Vec<MyBlock> = vec![];
                     let mut mir = tcx.optimized_mir(item);
+                    let hir = hir_krate.maybe_body_owned_by(item).unwrap();
+                    // println!("{:#?}", hir);
+
                     // println!("{:#?}", mir);
                     let mut mir2 = mir.clone();
                     let blocks = &mir.basic_blocks;
