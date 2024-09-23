@@ -89,7 +89,7 @@ impl rustc_driver::Callbacks for MirCheckerCallbacks {
     ) -> Compilation {
         let query_result = _queries.parse().unwrap();
         let krate = query_result.borrow().clone();
-        println!("{:#?}", krate);
+        // println!("AST\n{:#?}", krate);
         Compilation::Continue
     }
 
@@ -121,6 +121,7 @@ struct MyBlock<'a> {
 struct DFSCxt {
     block: BasicBlock,
     path: Vec<BasicBlock>,
+    conds: Vec<(String, String)>,
     branches: HashSet<(BasicBlock, BasicBlock)>,
     loop_paths: Vec<Vec<BasicBlock>>,
 }
@@ -129,12 +130,14 @@ impl DFSCxt {
     fn new(
         block: BasicBlock,
         path: Vec<BasicBlock>,
+        conds: Vec<(String, String)>,
         branches: HashSet<(BasicBlock, BasicBlock)>,
         loop_paths: Vec<Vec<BasicBlock>>,
     ) -> Self {
         Self {
             block,
             path,
+            conds,
             branches,
             loop_paths,
         }
@@ -432,19 +435,18 @@ impl FnBlocks<'_> {
         let dfs_cxt = DFSCxt::new(
             self.start_node,
             vec![self.start_node],
+            Vec::new(),
             HashSet::new(),
             Vec::new(),
         );
         stack.push(dfs_cxt);
-        let mut a = 0;
-        while !stack.is_empty()
-        // && a < 10
-        {
-            a += 1;
+        let re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
+        while !stack.is_empty() {
             let dfs_cxt = stack.pop().unwrap();
             let DFSCxt {
                 block,
                 path,
+                conds,
                 branches,
                 mut loop_paths,
             } = dfs_cxt;
@@ -454,6 +456,7 @@ impl FnBlocks<'_> {
             // println!("Loop Path: {:?}", loop_paths);
             let block = &self.blocks[block_index];
 
+            // Check if a loop path is duplicated
             let mut dup_loop = false;
             let mut path2 = path.clone();
             for loop_path in &loop_paths {
@@ -468,6 +471,7 @@ impl FnBlocks<'_> {
                 continue;
             }
 
+            // Check if the path contains a loop
             let size = path.len();
             if size > 1 && self.dominators.dominates(path[size - 1], path[size - 2]) {
                 let index = path[..size - 1]
@@ -478,33 +482,80 @@ impl FnBlocks<'_> {
                 // println!("Loop Path: {:?}", loop_path);
             }
 
+            // extract the condition
             if block.suc_blocks.is_empty() {
                 // continue;
+                println!("Final Conds: {:?}", conds);
                 println!("Final Path: {:?}", path);
             } else if let Terminator {
                 kind: TerminatorKind::SwitchInt { targets, .. },
-                ..
+                source_info,
             } = block.terminator.clone()
             {
                 for (value, target) in targets.iter() {
                     let mut path = path.clone();
                     let mut branches = branches.clone();
                     if branches.insert((block.block_name, target)) {
-                        path.push(target);
-                        stack.push(DFSCxt::new(target, path, branches, loop_paths.clone()));
+                        // new branch
+                        let span_str = format!("{:?}", source_info.span);
+                        if let Some(caps) = re.captures(&span_str) {
+                            let file_path = caps.get(1).map_or("", |m| m.as_str());
+                            let start_line = caps.get(2).map_or("", |m| m.as_str());
+                            let start_column = caps.get(3).map_or("", |m| m.as_str());
+                            let end_line = caps.get(4).map_or("", |m| m.as_str());
+                            let end_column = caps.get(5).map_or("", |m| m.as_str());
+
+                            let cond = get_span_string(
+                                file_path.to_string(),
+                                start_line.parse::<i32>().unwrap(),
+                                start_column.parse::<i32>().unwrap(),
+                                end_column.parse::<i32>().unwrap(),
+                            );
+                            let mut conds = conds.clone();
+                            conds.push((cond, value.to_string()));
+
+                            path.push(target);
+                            stack.push(DFSCxt::new(
+                                target,
+                                path,
+                                conds,
+                                branches,
+                                loop_paths.clone(),
+                            ));
+                        }
                     } else {
                     }
                 }
                 let mut path = path.clone();
                 let mut branches = branches.clone();
                 if branches.insert((block.block_name, targets.otherwise())) {
-                    path.push(targets.otherwise());
-                    stack.push(DFSCxt::new(
-                        targets.otherwise(),
-                        path,
-                        branches,
-                        loop_paths.clone(),
-                    ));
+                    // new branch
+                    let span_str = format!("{:?}", source_info.span);
+                    if let Some(caps) = re.captures(&span_str) {
+                        let file_path = caps.get(1).map_or("", |m| m.as_str());
+                        let start_line = caps.get(2).map_or("", |m| m.as_str());
+                        let start_column = caps.get(3).map_or("", |m| m.as_str());
+                        let end_line = caps.get(4).map_or("", |m| m.as_str());
+                        let end_column = caps.get(5).map_or("", |m| m.as_str());
+
+                        let cond = get_span_string(
+                            file_path.to_string(),
+                            start_line.parse::<i32>().unwrap(),
+                            start_column.parse::<i32>().unwrap(),
+                            end_column.parse::<i32>().unwrap(),
+                        );
+                        let mut conds = conds.clone();
+                        conds.push((cond, "otherwise".to_string()));
+
+                        path.push(targets.otherwise());
+                        stack.push(DFSCxt::new(
+                            targets.otherwise(),
+                            path,
+                            conds,
+                            branches,
+                            loop_paths,
+                        ));
+                    }
                 } else {
                 }
             } else {
@@ -513,8 +564,9 @@ impl FnBlocks<'_> {
                 stack.push(DFSCxt::new(
                     block.suc_blocks[0],
                     path,
+                    conds,
                     branches,
-                    loop_paths.clone(),
+                    loop_paths,
                 ));
             }
         }
@@ -567,7 +619,7 @@ impl MirCheckerCallbacks {
                     let mut fn_blocks: Vec<MyBlock> = vec![];
                     let mut mir = tcx.optimized_mir(item);
                     let hir = hir_krate.maybe_body_owned_by(item).unwrap();
-                    // println!("{:#?}", hir);
+                    println!("HIR\n{:#?}", hir);
 
                     // println!("{:#?}", mir);
                     let mut mir2 = mir.clone();
