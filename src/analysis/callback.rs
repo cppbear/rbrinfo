@@ -1,3 +1,5 @@
+use super::branchvisitor::ASTBranchVisitor;
+use super::branchvisitor::HIRBranchVisitor;
 use crate::analysis::option::AnalysisOption;
 use log::info;
 use petgraph::dot::Config;
@@ -5,10 +7,12 @@ use petgraph::dot::Dot;
 use petgraph::graph::DiGraph;
 use petgraph::prelude::*;
 use regex::Regex;
+use rustc_ast::visit as astvisit;
 use rustc_data_structures::graph::dominators::Dominators;
 use rustc_data_structures::graph::StartNode;
 use rustc_driver::Compilation;
 use rustc_hir::def;
+use rustc_hir::intravisit as hirvisit;
 use rustc_interface::interface;
 use rustc_interface::Queries;
 use rustc_middle::mir::BasicBlock;
@@ -90,6 +94,16 @@ impl rustc_driver::Callbacks for MirCheckerCallbacks {
         let query_result = _queries.parse().unwrap();
         let krate = query_result.borrow().clone();
         // println!("AST\n{:#?}", krate);
+        let mut visitor = ASTBranchVisitor {};
+        println!("AST Branch Visitor");
+        astvisit::walk_crate::<ASTBranchVisitor>(&mut visitor, &krate);
+
+        let dir_path = "./ast";
+        let file_path = format!("{}/ast.txt", dir_path);
+        fs::create_dir_all(dir_path).unwrap();
+        let mut file = File::create(file_path).unwrap();
+        file.write_all(format!("{:#?}", krate).as_bytes()).unwrap();
+
         Compilation::Continue
     }
 
@@ -211,7 +225,7 @@ impl FnBlocks<'_> {
                 println!("{}: {:?}", i, statement);
                 i = i + 1;
             }
-            println!("terminator {:?}", block.terminator);
+            println!("terminator {:#?}", block.terminator);
             println!("preds {:?}", block.pre_blocks);
             println!("succs {:?}", block.suc_blocks);
             let span = format!("{:?}", block.terminator.source_info.span);
@@ -301,7 +315,7 @@ impl FnBlocks<'_> {
                 {
                     let mut new_cond_chain = cond_chain.clone();
                     let span = format!("{:?}", terminator.source_info.span);
-                    println!("span: {}", span);
+                    // println!("span: {}", span);
                     let re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
                     if let Some(caps) = re.captures(&span) {
                         let file_path = caps.get(1).map_or("", |m| m.as_str());
@@ -619,7 +633,16 @@ impl MirCheckerCallbacks {
                     let mut fn_blocks: Vec<MyBlock> = vec![];
                     let mut mir = tcx.optimized_mir(item);
                     let hir = hir_krate.maybe_body_owned_by(item).unwrap();
-                    println!("HIR\n{:#?}", hir);
+                    // println!("HIR\n{:#?}", hir);
+                    let mut visitor = HIRBranchVisitor { tcx };
+                    println!("HIR Branch Visitor");
+                    hirvisit::walk_body::<HIRBranchVisitor>(&mut visitor, &hir);
+
+                    let dir_path = "./hir";
+                    let file_path = format!("{}/hir.txt", dir_path);
+                    fs::create_dir_all(dir_path).unwrap();
+                    let mut file = File::create(file_path).unwrap();
+                    file.write_all(format!("{:#?}", hir).as_bytes()).unwrap();
 
                     // println!("{:#?}", mir);
                     let mut mir2 = mir.clone();

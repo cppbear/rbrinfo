@@ -20,6 +20,7 @@ pub mod analysis {
     // Definitions of callbacks for rustc
     pub mod callback;
     pub mod option;
+    mod branchvisitor;
 }
 
 // Useful utilities
