@@ -1,5 +1,4 @@
-use super::branchvisitor::ASTBranchVisitor;
-use super::branchvisitor::HIRBranchVisitor;
+use super::branchvisitor::{ASTBranchVisitor, HIRBranchVisitor};
 use crate::analysis::option::AnalysisOption;
 use log::info;
 use petgraph::dot::Config;
