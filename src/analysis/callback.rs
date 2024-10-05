@@ -28,7 +28,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Write;
 
-fn get_span_string(
+pub fn get_span_string(
     file_path: String,
     line_number: i32,
     start_column: i32,
@@ -93,7 +93,7 @@ impl rustc_driver::Callbacks for MirCheckerCallbacks {
         let query_result = _queries.parse().unwrap();
         let krate = query_result.borrow().clone();
         // println!("AST\n{:#?}", krate);
-        let mut visitor = ASTBranchVisitor {};
+        let mut visitor = ASTBranchVisitor::new();
         println!("AST Branch Visitor");
         astvisit::walk_crate::<ASTBranchVisitor>(&mut visitor, &krate);
 

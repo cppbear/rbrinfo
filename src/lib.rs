@@ -12,15 +12,16 @@ extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
 extern crate rustc_target;
+extern crate thin_vec;
 #[macro_use]
 extern crate log;
 
 // Modules for static analyses
 pub mod analysis {
     // Definitions of callbacks for rustc
+    mod branchvisitor;
     pub mod callback;
     pub mod option;
-    mod branchvisitor;
 }
 
 // Useful utilities
