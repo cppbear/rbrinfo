@@ -20,6 +20,7 @@ extern crate log;
 pub mod analysis {
     // Definitions of callbacks for rustc
     mod branchvisitor;
+    mod condition;
     pub mod callback;
     pub mod option;
 }

@@ -97,6 +97,8 @@ impl rustc_driver::Callbacks for MirCheckerCallbacks {
         println!("AST Branch Visitor");
         astvisit::walk_crate::<ASTBranchVisitor>(&mut visitor, &krate);
 
+        visitor.print_map();
+
         let dir_path = "./ast";
         let file_path = format!("{}/ast.txt", dir_path);
         fs::create_dir_all(dir_path).unwrap();
@@ -222,6 +224,7 @@ impl FnBlocks<'_> {
             let mut i = 0;
             for statement in &block.statements {
                 println!("{}: {:?}", i, statement);
+                println!("{:?}", statement.source_info.span);
                 i = i + 1;
             }
             println!("terminator {:#?}", block.terminator);
