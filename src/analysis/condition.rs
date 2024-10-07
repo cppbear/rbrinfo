@@ -1,18 +1,22 @@
-#[derive(Debug)]
+use std::collections::BTreeMap;
+
+use super::branchvisitor::SourceInfo;
+
+#[derive(Clone, Debug)]
 pub enum Condition {
     Bool(BoolCond),
     For(ForCond),
     Match(MatchCond),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum CmpIntKind {
     No,
     Eq,
     Ne,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BoolCond {
     cond_str: String,
     cmp_with_int: CmpIntKind,
@@ -45,7 +49,7 @@ impl BoolCond {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ForCond {
     iter_var: String,
     iter_range: String,
@@ -72,8 +76,50 @@ impl ForCond {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+pub struct Arm {
+    pat: String,
+    body_source: Option<SourceInfo>,
+}
+
+impl Arm {
+    pub fn new(pat: String, body_source: Option<SourceInfo>) -> Self {
+        Self { pat, body_source }
+    }
+
+    pub fn get_pat(&self) -> &str {
+        &self.pat
+    }
+
+    pub fn get_body_source(&self) -> &Option<SourceInfo> {
+        &self.body_source
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct MatchCond {
     match_str: String,
-    // arms: Vec<Arm>,
+    pub arms_map: BTreeMap<SourceInfo, Arm>,
+}
+
+impl MatchCond {
+    pub fn new(match_str: String) -> Self {
+        Self {
+            match_str,
+            arms_map: BTreeMap::new(),
+        }
+    }
+
+    pub fn get_match_str(&self) -> &str {
+        &self.match_str
+    }
+
+    pub fn add_arm(&mut self, pat_source: SourceInfo, pat: String, body_source: Option<SourceInfo>) {
+        self.arms_map
+            .insert(pat_source, Arm::new(pat, body_source));
+    }
+
+    pub fn get_arms_map(&self) -> &BTreeMap<SourceInfo, Arm> {
+        &self.arms_map
+    }
 }

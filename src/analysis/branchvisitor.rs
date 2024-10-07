@@ -10,7 +10,7 @@ use rustc_middle::ty::TyCtxt;
 use std::collections::BTreeMap;
 // use thin_vec::ThinVec;
 
-#[derive(Debug, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]
 pub struct SourceInfo {
     pub file_path: String,
     pub start_line: i32,
@@ -80,17 +80,17 @@ impl<'tcx> HIRVisitor<'tcx> for HIRBranchVisitor<'tcx> {
         match &ex.kind {
             rustc_hir::ExprKind::If(_, _, _) => {
                 // Do something with the if expression
-                println!("If expression found");
+                // println!("If expression found");
                 // println!("{:#?}", ex);
             }
             rustc_hir::ExprKind::Loop(_, _, _, _) => {
                 // Do something with the loop expression
-                println!("Loop expression found");
+                // println!("Loop expression found");
                 // println!("{:#?}", ex);
             }
             rustc_hir::ExprKind::Match(_, _, _) => {
                 // Do something with the match expression
-                println!("Match expression found");
+                // println!("Match expression found");
                 // println!("{:#?}", ex);
             }
             _ => {}
@@ -102,6 +102,7 @@ impl<'tcx> HIRVisitor<'tcx> for HIRBranchVisitor<'tcx> {
 pub struct ASTBranchVisitor {
     re: Regex,
     cond_map: BTreeMap<SourceInfo, Condition>,
+    pat_infos: Vec<(SourceInfo, String)>,
 }
 
 impl ASTBranchVisitor {
@@ -110,6 +111,7 @@ impl ASTBranchVisitor {
         Self {
             re,
             cond_map: BTreeMap::new(),
+            pat_infos: Vec::new(),
         }
     }
 
@@ -151,7 +153,7 @@ impl ASTBranchVisitor {
     fn handle_expr(&mut self, expr: &P<rustc_ast::Expr>) {
         match &expr.kind {
             rustc_ast::ExprKind::Binary(op, lexpr, rexpr) => {
-                println!("Binary expression found");
+                // println!("Binary expression found");
                 match &op.node {
                     rustc_ast::BinOpKind::And | rustc_ast::BinOpKind::Or => {
                         self.handle_expr(lexpr);
@@ -207,10 +209,10 @@ impl ASTBranchVisitor {
                 }
             }
             rustc_ast::ExprKind::Unary(op, subexpr) => {
-                println!("Unary expression found");
+                // println!("Unary expression found");
                 match &op {
                     rustc_ast::UnOp::Not => {
-                        println!("Negation expression found");
+                        // println!("Negation expression found");
                         self.handle_expr(subexpr);
                     }
                     _ => {
@@ -220,11 +222,11 @@ impl ASTBranchVisitor {
                     }
                 }
             }
-            // rustc_ast::ExprKind::Let(_, _, _, _) => {
-            //     let expr_str = self.get_string_from_span(expr.span);
-            //     let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::No));
-            //     self.cond_map.insert(self.get_source_info(expr.span), cond);
-            // }
+            rustc_ast::ExprKind::Let(pat, _, _, _) => {
+                let expr_str = self.get_string_from_span(expr.span);
+                let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::No));
+                self.cond_map.insert(self.get_source_info(pat.span), cond);
+            }
             rustc_ast::ExprKind::Paren(expr) => {
                 self.handle_expr(expr);
             }
@@ -244,7 +246,7 @@ impl ASTBranchVisitor {
     //     }
     // }
 
-    fn handle_pat(&self, pat: &rustc_ast::Pat) {
+    fn handle_pat(&mut self, pat: &rustc_ast::Pat) {
         match &pat.kind {
             rustc_ast::PatKind::Or(subpats) => {
                 for subpat in subpats {
@@ -254,18 +256,29 @@ impl ASTBranchVisitor {
             rustc_ast::PatKind::Paren(subpat) => {
                 self.handle_pat(subpat);
             }
-            rustc_ast::PatKind::Struct(_, path, _, _)
-            | rustc_ast::PatKind::TupleStruct(_, path, _) => {
+            rustc_ast::PatKind::Struct(_, path, _, _) => {
                 let path_str = self.get_string_from_span(path.span);
                 println!("Path: {}", path_str);
+                self.pat_infos
+                    .push((self.get_source_info(path.span), path_str + "{}"));
             }
-            rustc_ast::PatKind::Lit(expr) => {}
+            rustc_ast::PatKind::TupleStruct(_, path, _) => {
+                let path_str = self.get_string_from_span(path.span);
+                println!("Path: {}", path_str);
+                self.pat_infos
+                    .push((self.get_source_info(path.span), path_str + "()"));
+            }
+            // rustc_ast::PatKind::Lit(expr) => {}
             rustc_ast::PatKind::Wild => {
                 println!("Wildcard pattern found");
+                self.pat_infos
+                    .push((self.get_source_info(pat.span), "_".to_string()));
             }
             _ => {
                 let pat_str = self.get_string_from_span(pat.span);
                 println!("Pattern: {}", pat_str);
+                self.pat_infos
+                    .push((self.get_source_info(pat.span), pat_str));
             }
         }
     }
@@ -273,52 +286,67 @@ impl ASTBranchVisitor {
     pub fn print_map(&self) {
         println!("==================Condition Map==================");
         for (source_info, cond) in &self.cond_map {
-            println!("Source: {:?}, Condition: {:?}", source_info, cond);
+            println!("Source: {:?}, Condition: {:?}\n", source_info, cond);
         }
         println!("==================Condition Map==================");
+    }
+
+    pub fn move_map(self) -> BTreeMap<SourceInfo, Condition> {
+        self.cond_map
     }
 }
 
 impl<'ast> ASTVisitor<'ast> for ASTBranchVisitor {
     fn visit_expr(&mut self, ex: &'ast rustc_ast::Expr) -> Self::Result {
         match &ex.kind {
-            rustc_ast::ExprKind::If(cond_expr, _, _) => {
+            rustc_ast::ExprKind::If(cond_expr, _, _)
+            | rustc_ast::ExprKind::While(cond_expr, _, _) => {
                 // Do something with the if expression
-                println!("If expression found");
+                // println!("If expression found");
                 self.handle_expr(cond_expr);
                 // println!("{:#?}", ex);
-            }
-            rustc_ast::ExprKind::While(cond_expr, _, _) => {
-                // Do something with the while expression
-                println!("While expression found");
-                // println!("{:#?}", ex);
-                self.handle_expr(cond_expr);
             }
             rustc_ast::ExprKind::ForLoop { pat, iter, .. } => {
                 // Do something with the while expression
-                println!("ForLoop expression found");
+                // println!("ForLoop expression found");
                 // println!("{:#?}", ex);
                 let pat_str = self.get_string_from_span(pat.span);
-                let pat_loc = self.get_source_info(pat.span);
+                // let pat_loc = self.get_source_info(pat.span);
                 let iter_str = self.get_string_from_span(iter.span);
                 let iter_loc = self.get_source_info(iter.span);
                 let cond = Condition::For(ForCond::new(pat_str, iter_str));
-                let source_info = pat_loc.expand(&iter_loc).unwrap();
-                self.cond_map.insert(source_info, cond);
+                // let source_info = pat_loc.expand(&iter_loc).unwrap();
+                // self.cond_map.insert(source_info, cond);
+                self.cond_map.insert(iter_loc, cond);
             }
             // rustc_ast::ExprKind::Loop(_, _, _) => {
             //     println!("Loop expression found");
             // }
             rustc_ast::ExprKind::Match(match_expr, arms, _) => {
                 // Do something with the match expression
-                println!("Match expression found");
+                // println!("Match expression found");
                 // println!("{:#?}", ex);
                 let match_str = self.get_string_from_span(match_expr.span);
+                let mut match_cond = MatchCond::new(match_str);
                 // self.handle_arms(arms);
                 for arm in arms {
-                    // TODO: record the span of the arm
+                    self.pat_infos.clear();
                     self.handle_pat(&arm.pat);
+                    if let Some(guard) = &arm.guard {
+                        self.handle_expr(guard);
+                    }
+                    let body_source = match &arm.body {
+                        Some(body) => Some(self.get_source_info(body.span)),
+                        None => None,
+                    };
+                    for (pat_source, pat) in &self.pat_infos {
+                        match_cond.add_arm(pat_source.clone(), pat.clone(), body_source.clone());
+                    }
                 }
+                self.cond_map.insert(
+                    self.get_source_info(match_expr.span),
+                    Condition::Match(match_cond),
+                );
             }
             _ => {}
         }

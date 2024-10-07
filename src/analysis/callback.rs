@@ -1,4 +1,5 @@
-use super::branchvisitor::{ASTBranchVisitor, HIRBranchVisitor};
+use super::branchvisitor::{ASTBranchVisitor, HIRBranchVisitor, SourceInfo};
+use super::condition::{Arm, Condition};
 use crate::analysis::option::AnalysisOption;
 use log::info;
 use petgraph::dot::Config;
@@ -16,17 +17,12 @@ use rustc_interface::interface;
 use rustc_interface::Queries;
 use rustc_middle::mir::BasicBlock;
 use rustc_middle::mir::Statement;
-use rustc_middle::mir::StatementKind;
-use rustc_middle::mir::Terminator;
-use rustc_middle::mir::TerminatorKind;
+// use rustc_middle::mir::StatementKind;
+use rustc_middle::mir::{Terminator, TerminatorKind};
 use rustc_middle::ty::TyCtxt;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::fs;
-use std::fs::File;
-use std::io::BufRead;
-use std::io::BufReader;
-use std::io::Write;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
 
 pub fn get_span_string(
     file_path: String,
@@ -59,13 +55,14 @@ pub fn get_span_string(
         .take((end_column - start_column) as usize) // 提取指定长度的字符
         .collect::<String>();
 
-    println!("Extracted snippet: '{}'", snippet);
+    // println!("Extracted snippet: '{}'", snippet);
     snippet
 }
 
 pub struct MirCheckerCallbacks {
     pub analysis_options: AnalysisOption,
     pub source_name: String,
+    cond_map: BTreeMap<SourceInfo, Condition>,
 }
 
 impl MirCheckerCallbacks {
@@ -73,6 +70,7 @@ impl MirCheckerCallbacks {
         Self {
             analysis_options: options,
             source_name: String::new(),
+            cond_map: BTreeMap::new(),
         }
     }
 }
@@ -94,10 +92,11 @@ impl rustc_driver::Callbacks for MirCheckerCallbacks {
         let krate = query_result.borrow().clone();
         // println!("AST\n{:#?}", krate);
         let mut visitor = ASTBranchVisitor::new();
-        println!("AST Branch Visitor");
+        // println!("AST Branch Visitor");
         astvisit::walk_crate::<ASTBranchVisitor>(&mut visitor, &krate);
 
         visitor.print_map();
+        self.cond_map = visitor.move_map();
 
         let dir_path = "./ast";
         let file_path = format!("{}/ast.txt", dir_path);
@@ -159,21 +158,21 @@ impl DFSCxt {
     }
 }
 
-fn find_second_last_index<T: PartialEq>(vec: &[T], target: T) -> Option<usize> {
-    let mut count = 0;
-    let len = vec.len();
+// fn find_second_last_index<T: PartialEq>(vec: &[T], target: T) -> Option<usize> {
+//     let mut count = 0;
+//     let len = vec.len();
 
-    for i in (0..len).rev() {
-        if vec[i] == target {
-            count += 1;
-            if count == 2 {
-                return Some(i);
-            }
-        }
-    }
+//     for i in (0..len).rev() {
+//         if vec[i] == target {
+//             count += 1;
+//             if count == 2 {
+//                 return Some(i);
+//             }
+//         }
+//     }
 
-    None
-}
+//     None
+// }
 
 fn count_subsequence<T: PartialEq>(vec: &Vec<T>, subseq: &Vec<T>) -> usize {
     if subseq.is_empty() || vec.len() < subseq.len() {
@@ -213,25 +212,82 @@ struct FnBlocks<'a> {
     blocks: Vec<MyBlock<'a>>,
     dominators: Dominators<BasicBlock>,
     cond_chains: Vec<Vec<(String, String)>>,
+    re: Regex,
+    cond_map: BTreeMap<SourceInfo, Condition>,
 }
 
 impl FnBlocks<'_> {
+    fn get_source_info(&self, span: rustc_span::Span) -> SourceInfo {
+        let span_str = format!("{:?}", span);
+        let caps = self.re.captures(&span_str).unwrap();
+
+        let file_path = caps.get(1).map_or("", |m| m.as_str());
+        let start_line = caps.get(2).map_or("", |m| m.as_str());
+        let start_column = caps.get(3).map_or("", |m| m.as_str());
+        let end_line = caps.get(4).map_or("", |m| m.as_str());
+        let end_column = caps.get(5).map_or("", |m| m.as_str());
+
+        SourceInfo {
+            file_path: file_path.to_string(),
+            start_line: start_line.parse::<i32>().unwrap(),
+            start_column: start_column.parse::<i32>().unwrap(),
+            end_line: end_line.parse::<i32>().unwrap(),
+            end_column: end_column.parse::<i32>().unwrap(),
+        }
+    }
+
+    fn get_matched_cond(&self, source_info: &SourceInfo) -> Option<Condition> {
+        if let Some(cond) = self.cond_map.get(source_info) {
+            return Some(cond.clone());
+        }
+
+        for (k, v) in &self.cond_map {
+            if source_info.contains(k) {
+                return Some(v.clone());
+            }
+            if let Condition::Match(match_cond) = v {
+                for (pat_source, _) in &match_cond.arms_map {
+                    if *source_info == *pat_source {
+                        return Some(v.clone());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn block_in_arm(&self, block: &MyBlock, arm: &Arm) -> bool {
+        if let Some(body_source) = &arm.get_body_source() {
+            for stmt in &block.statements {
+                if body_source.contains(&self.get_source_info(stmt.source_info.span)) {
+                    return true;
+                }
+            }
+            if body_source.contains(&self.get_source_info(block.terminator.source_info.span)) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn my_cout(&self) {
         println!("{:?}", self.fn_name);
         println!();
         for block in &self.blocks {
-            println!("{:?}", block.block_name);
-            let mut i = 0;
-            for statement in &block.statements {
-                println!("{}: {:?}", i, statement);
-                println!("{:?}", statement.source_info.span);
-                i = i + 1;
-            }
-            println!("terminator {:#?}", block.terminator);
-            println!("preds {:?}", block.pre_blocks);
-            println!("succs {:?}", block.suc_blocks);
+            // println!("{:?}", block.block_name);
+            // let mut i = 0;
+            // for statement in &block.statements {
+            //     println!("{}: {:?}", i, statement);
+            //     println!("{:?}", statement.source_info.span);
+            //     i = i + 1;
+            // }
+            // println!("terminator {:#?}", block.terminator);
+            // println!("preds {:?}", block.pre_blocks);
+            // println!("succs {:?}", block.suc_blocks);
             let span = format!("{:?}", block.terminator.source_info.span);
-            println!("{}", span);
+            // println!("{}", span);
             let re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
             if let Some(caps) = re.captures(&span) {
                 let file_path = caps.get(1).map_or("", |m| m.as_str());
@@ -446,7 +502,7 @@ impl FnBlocks<'_> {
     }
 
     fn iterative_dfs(&mut self) {
-        println!("-----------iterative_dfs------------");
+        // println!("-----------iterative_dfs------------");
         let mut stack: Vec<DFSCxt> = Vec::new();
         let dfs_cxt = DFSCxt::new(
             self.start_node,
@@ -456,7 +512,8 @@ impl FnBlocks<'_> {
             Vec::new(),
         );
         stack.push(dfs_cxt);
-        let re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
+        // let re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
+        let mut cond_chains: Vec<(Vec<(String, String)>, Vec<BasicBlock>)> = Vec::new();
         while !stack.is_empty() {
             let dfs_cxt = stack.pop().unwrap();
             let DFSCxt {
@@ -501,35 +558,140 @@ impl FnBlocks<'_> {
             // extract the condition
             if block.suc_blocks.is_empty() {
                 // continue;
-                println!("Final Conds: {:?}", conds);
-                println!("Final Path: {:?}", path);
+                // println!("Final Conds: {:?}", conds);
+                // println!("Final Path: {:?}", path);
+                cond_chains.push((conds, path));
             } else if let Terminator {
                 kind: TerminatorKind::SwitchInt { targets, .. },
                 source_info,
             } = block.terminator.clone()
             {
+                let cond_source = self.get_source_info(source_info.span);
                 for (value, target) in targets.iter() {
                     let mut path = path.clone();
                     let mut branches = branches.clone();
                     if branches.insert((block.block_name, target)) {
                         // new branch
-                        let span_str = format!("{:?}", source_info.span);
-                        if let Some(caps) = re.captures(&span_str) {
-                            let file_path = caps.get(1).map_or("", |m| m.as_str());
-                            let start_line = caps.get(2).map_or("", |m| m.as_str());
-                            let start_column = caps.get(3).map_or("", |m| m.as_str());
-                            let end_line = caps.get(4).map_or("", |m| m.as_str());
-                            let end_column = caps.get(5).map_or("", |m| m.as_str());
-
-                            let cond = get_span_string(
-                                file_path.to_string(),
-                                start_line.parse::<i32>().unwrap(),
-                                start_column.parse::<i32>().unwrap(),
-                                end_column.parse::<i32>().unwrap(),
-                            );
+                        // println!("source_info: {:?}", source_info);
+                        if let Some(condition) = self.get_matched_cond(&cond_source) {
+                            // println!("condition: {:?}", condition);
                             let mut conds = conds.clone();
-                            conds.push((cond, value.to_string()));
-
+                            match condition {
+                                Condition::Bool(bool_cond) => {
+                                    if bool_cond.eq_with_int() {
+                                        conds.push((
+                                            bool_cond.get_cond_str().to_string(),
+                                            "true".to_string(),
+                                        ));
+                                    } else if bool_cond.ne_with_int() {
+                                        conds.push((
+                                            bool_cond.get_cond_str().to_string(),
+                                            "false".to_string(),
+                                        ));
+                                    } else {
+                                        if value == 0 {
+                                            conds.push((
+                                                bool_cond.get_cond_str().to_string(),
+                                                "false".to_string(),
+                                            ));
+                                        } else {
+                                            conds.push((
+                                                bool_cond.get_cond_str().to_string(),
+                                                "true".to_string(),
+                                            ));
+                                        }
+                                    }
+                                }
+                                Condition::For(for_cond) => {
+                                    let value_str = match value {
+                                        0 => "false",
+                                        1 => "true",
+                                        _ => panic!("Invalid value"),
+                                    };
+                                    conds.push((for_cond.get_cond_str(), value_str.to_string()));
+                                }
+                                Condition::Match(match_cond) => {
+                                    let mut pat_matched = false;
+                                    for (pat_source, arm) in &match_cond.arms_map {
+                                        if cond_source == *pat_source {
+                                            pat_matched = true;
+                                            // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
+                                            // if let Ok(_) = arm.get_pat().parse::<u128>() {
+                                            //     conds.push((
+                                            //         format!(
+                                            //             "{} matches {}",
+                                            //             match_cond.get_match_str(),
+                                            //             arm.get_pat()
+                                            //         ),
+                                            //         "true".to_string(),
+                                            //     ));
+                                            // } else {
+                                            //     if value == 0 {
+                                            //         conds.push((
+                                            //             format!(
+                                            //                 "{} matches {}",
+                                            //                 match_cond.get_match_str(),
+                                            //                 arm.get_pat()
+                                            //             ),
+                                            //             "false".to_string(),
+                                            //         ));
+                                            //     }
+                                            // }
+                                            if self.block_in_arm(&self.blocks[target.index()], arm)
+                                            {
+                                                conds.push((
+                                                    format!(
+                                                        "{} matches {}",
+                                                        match_cond.get_match_str(),
+                                                        arm.get_pat()
+                                                    ),
+                                                    "true".to_string(),
+                                                ));
+                                            } else {
+                                                conds.push((
+                                                    format!(
+                                                        "{} matches {}",
+                                                        match_cond.get_match_str(),
+                                                        arm.get_pat()
+                                                    ),
+                                                    "false".to_string(),
+                                                ));
+                                            }
+                                            break;
+                                        }
+                                    }
+                                    // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
+                                    if !pat_matched {
+                                        for (_, arm) in &match_cond.arms_map {
+                                            // if let Ok(pat_value) = arm.get_pat().parse::<u128>() {
+                                            //     println!("pat_value: {:?}", pat_value);
+                                            //     if pat_value == value {
+                                            //         conds.push((
+                                            //             format!(
+                                            //                 "{} matches {}",
+                                            //                 match_cond.get_match_str(),
+                                            //                 arm.get_pat()
+                                            //             ),
+                                            //             "true".to_string(),
+                                            //         ));
+                                            //         break;
+                                            //     }
+                                            // }
+                                            if self.block_in_arm(&self.blocks[target.index()], arm)
+                                            {
+                                                conds.push((
+                                                    format!(
+                                                        "{} matches {}",
+                                                        match_cond.get_match_str(),
+                                                        arm.get_pat()
+                                                    ),
+                                                    "true".to_string(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             path.push(target);
                             stack.push(DFSCxt::new(
                                 target,
@@ -538,41 +700,128 @@ impl FnBlocks<'_> {
                                 branches,
                                 loop_paths.clone(),
                             ));
+                        } else {
+                            panic!("No matched condition found");
                         }
                     } else {
                     }
                 }
                 let mut path = path.clone();
                 let mut branches = branches.clone();
-                if branches.insert((block.block_name, targets.otherwise())) {
-                    // new branch
-                    let span_str = format!("{:?}", source_info.span);
-                    if let Some(caps) = re.captures(&span_str) {
-                        let file_path = caps.get(1).map_or("", |m| m.as_str());
-                        let start_line = caps.get(2).map_or("", |m| m.as_str());
-                        let start_column = caps.get(3).map_or("", |m| m.as_str());
-                        let end_line = caps.get(4).map_or("", |m| m.as_str());
-                        let end_column = caps.get(5).map_or("", |m| m.as_str());
-
-                        let cond = get_span_string(
-                            file_path.to_string(),
-                            start_line.parse::<i32>().unwrap(),
-                            start_column.parse::<i32>().unwrap(),
-                            end_column.parse::<i32>().unwrap(),
-                        );
-                        let mut conds = conds.clone();
-                        conds.push((cond, "otherwise".to_string()));
-
-                        path.push(targets.otherwise());
-                        stack.push(DFSCxt::new(
-                            targets.otherwise(),
-                            path,
-                            conds,
-                            branches,
-                            loop_paths,
-                        ));
+                if !matches!(
+                    self.blocks[targets.otherwise().index()].terminator.kind,
+                    TerminatorKind::Unreachable
+                ) {
+                    if branches.insert((block.block_name, targets.otherwise())) {
+                        // new branch
+                        if let Some(condition) = self.get_matched_cond(&cond_source) {
+                            let mut conds = conds.clone();
+                            match condition {
+                                Condition::Bool(bool_cond) => {
+                                    if bool_cond.eq_with_int() {
+                                        conds.push((
+                                            bool_cond.get_cond_str().to_string(),
+                                            "false".to_string(),
+                                        ));
+                                    } else if bool_cond.ne_with_int() {
+                                        conds.push((
+                                            bool_cond.get_cond_str().to_string(),
+                                            "true".to_string(),
+                                        ));
+                                    } else {
+                                        conds.push((
+                                            bool_cond.get_cond_str().to_string(),
+                                            "true".to_string(),
+                                        ));
+                                    }
+                                }
+                                Condition::For(for_cond) => {
+                                    conds.push((for_cond.get_cond_str(), "otherwise".to_string()));
+                                }
+                                Condition::Match(match_cond) => {
+                                    let mut pat_matched = false;
+                                    for (pat_source, arm) in &match_cond.arms_map {
+                                        if cond_source == *pat_source {
+                                            pat_matched = true;
+                                            // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
+                                            // if let Ok(_) = arm.get_pat().parse::<u128>() {
+                                            //     conds.push((
+                                            //         format!(
+                                            //             "{} matches {}",
+                                            //             match_cond.get_match_str(),
+                                            //             arm.get_pat()
+                                            //         ),
+                                            //         "false".to_string(),
+                                            //     ));
+                                            // } else {
+                                            //     conds.push((
+                                            //         format!(
+                                            //             "{} matches {}",
+                                            //             match_cond.get_match_str(),
+                                            //             arm.get_pat()
+                                            //         ),
+                                            //         "true".to_string(),
+                                            //     ));
+                                            // }
+                                            if self.block_in_arm(
+                                                &self.blocks[targets.otherwise().index()],
+                                                arm,
+                                            ) {
+                                                conds.push((
+                                                    format!(
+                                                        "{} matches {}",
+                                                        match_cond.get_match_str(),
+                                                        arm.get_pat()
+                                                    ),
+                                                    "true".to_string(),
+                                                ));
+                                            } else {
+                                                conds.push((
+                                                    format!(
+                                                        "{} matches {}",
+                                                        match_cond.get_match_str(),
+                                                        arm.get_pat()
+                                                    ),
+                                                    "false".to_string(),
+                                                ));
+                                            }
+                                            break;
+                                        }
+                                    }
+                                    if !pat_matched {
+                                        // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
+                                        for (_, arm) in &match_cond.arms_map {
+                                            if self.block_in_arm(
+                                                &self.blocks[targets.otherwise().index()],
+                                                arm,
+                                            ) {
+                                                conds.push((
+                                                    format!(
+                                                        "{} matches {}",
+                                                        match_cond.get_match_str(),
+                                                        arm.get_pat()
+                                                    ),
+                                                    "true".to_string(),
+                                                ));
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            path.push(targets.otherwise());
+                            stack.push(DFSCxt::new(
+                                targets.otherwise(),
+                                path,
+                                conds,
+                                branches,
+                                loop_paths.clone(),
+                            ));
+                        } else {
+                            panic!("No matched condition found");
+                        }
+                    } else {
                     }
-                } else {
                 }
             } else {
                 let mut path = path.clone();
@@ -586,7 +835,37 @@ impl FnBlocks<'_> {
                 ));
             }
         }
-        println!("-----------iterative_dfs------------");
+        // println!("-----------iterative_dfs------------\n");
+        let mut chain_id = 0;
+        let mut chains_str = String::new();
+        for (conds, path) in &cond_chains {
+            chains_str += &format!("CondChain {}\n", chain_id);
+            let mut cond_iter = 0;
+            for (cond, value) in conds {
+                if cond_iter == 0 {
+                    chains_str += &format!("{} is {}", cond, value);
+                } else {
+                    chains_str += &format!(" -> {} is {}", cond, value);
+                }
+                cond_iter += 1;
+            }
+            chains_str += "\n";
+            let mut path_iter = 0;
+            for block in path {
+                if path_iter == 0 {
+                    chains_str += &format!("{:?}", block);
+                } else {
+                    chains_str += &format!(" -> {:?}", block);
+                }
+                path_iter += 1;
+            }
+            chains_str += "\n";
+            if chain_id != cond_chains.len() - 1 {
+                chains_str += "\n";
+            }
+            chain_id += 1;
+        }
+        println!("{}", chains_str);
     }
 
     fn dump_cfg_to_dot(&self) {
@@ -637,7 +916,7 @@ impl MirCheckerCallbacks {
                     let hir = hir_krate.maybe_body_owned_by(item).unwrap();
                     // println!("HIR\n{:#?}", hir);
                     let mut visitor = HIRBranchVisitor { tcx };
-                    println!("HIR Branch Visitor");
+                    // println!("HIR Branch Visitor");
                     hirvisit::walk_body::<HIRBranchVisitor>(&mut visitor, &hir);
 
                     let dir_path = "./hir";
@@ -693,6 +972,8 @@ impl MirCheckerCallbacks {
                         blocks: fn_blocks.clone(),
                         dominators: mir2.basic_blocks.dominators().clone(),
                         cond_chains: Vec::new(),
+                        re: Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap(),
+                        cond_map: self.cond_map.clone(),
                     };
                     ret.push(a_fn_block);
 
@@ -709,7 +990,7 @@ impl MirCheckerCallbacks {
             block.my_cout();
             block.dump_cfg_to_dot();
             block.iterative_dfs();
-            block.cond_chain_cout();
+            // block.cond_chain_cout();
         }
     }
 }
