@@ -6,7 +6,7 @@ use rustc_ast::{
     visit::{self, Visitor as ASTVisitor},
 };
 use rustc_hir::intravisit::{self, Visitor as HIRVisitor};
-use rustc_middle::ty::TyCtxt;
+use rustc_middle::ty::{TyCtxt, TyKind};
 use std::collections::BTreeMap;
 // use thin_vec::ThinVec;
 
@@ -88,10 +88,33 @@ impl<'tcx> HIRVisitor<'tcx> for HIRBranchVisitor<'tcx> {
                 // println!("Loop expression found");
                 // println!("{:#?}", ex);
             }
-            rustc_hir::ExprKind::Match(_, _, _) => {
+            rustc_hir::ExprKind::Match(expr, _, _) => {
                 // Do something with the match expression
                 // println!("Match expression found");
                 // println!("{:#?}", ex);
+                println!("{:?}", self.tcx.hir().node_to_string(expr.hir_id));
+                println!("{:?}", self.tcx.type_of(expr.hir_id.owner.to_def_id()));
+                let local_def_id = self.tcx.hir().enclosing_body_owner(expr.hir_id);
+                let typeck_res = self
+                    .tcx
+                    .typeck_body(self.tcx.hir().body_owned_by(local_def_id).id());
+                let expr_ty = typeck_res.expr_ty(expr);
+                println!("{:?}", expr_ty);
+                if let TyKind::Adt(adt_def, _) = expr_ty.kind() {
+                    if adt_def.is_enum() {
+                        
+                        
+                        let mut num = 0;
+                        for variant in adt_def.variants() {
+                            println!("Variant {}: {:?}", num, variant.name);
+                            num += 1;
+                            for field in variant.fields.iter() {
+                                let field_ty = self.tcx.type_of(field.did);
+                                println!("Field: {:?}, Type: {:?}", field.name, field_ty);
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         }

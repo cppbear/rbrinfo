@@ -276,16 +276,16 @@ impl FnBlocks<'_> {
         println!("{:?}", self.fn_name);
         println!();
         for block in &self.blocks {
-            // println!("{:?}", block.block_name);
-            // let mut i = 0;
-            // for statement in &block.statements {
-            //     println!("{}: {:?}", i, statement);
-            //     println!("{:?}", statement.source_info.span);
-            //     i = i + 1;
-            // }
-            // println!("terminator {:#?}", block.terminator);
-            // println!("preds {:?}", block.pre_blocks);
-            // println!("succs {:?}", block.suc_blocks);
+            println!("{:?}", block.block_name);
+            let mut i = 0;
+            for statement in &block.statements {
+                println!("{}: {:?}", i, statement);
+                println!("{:?}", statement.source_info.span);
+                i = i + 1;
+            }
+            println!("terminator {:#?}", block.terminator);
+            println!("preds {:?}", block.pre_blocks);
+            println!("succs {:?}", block.suc_blocks);
             let span = format!("{:?}", block.terminator.source_info.span);
             // println!("{}", span);
             let re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
@@ -916,7 +916,7 @@ impl MirCheckerCallbacks {
                     let hir = hir_krate.maybe_body_owned_by(item).unwrap();
                     // println!("HIR\n{:#?}", hir);
                     let mut visitor = HIRBranchVisitor { tcx };
-                    // println!("HIR Branch Visitor");
+                    println!("HIR Branch Visitor");
                     hirvisit::walk_body::<HIRBranchVisitor>(&mut visitor, &hir);
 
                     let dir_path = "./hir";
