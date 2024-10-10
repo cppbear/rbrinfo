@@ -1,13 +1,17 @@
 use super::callback::get_span_string;
-use super::condition::{BoolCond, CmpIntKind, Condition, ForCond, MatchCond};
+use super::condition::{BinKind, BinaryCond, BoolCond, Condition, ForCond, MatchCond, OtherCond};
 use regex::Regex;
+use rustc_ast::BinOpKind;
 use rustc_ast::{
     ptr::P,
     visit::{self, Visitor as ASTVisitor},
 };
 use rustc_hir::intravisit::{self, Visitor as HIRVisitor};
 use rustc_middle::ty::{TyCtxt, TyKind};
+use rustc_span::source_map::Spanned;
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 // use thin_vec::ThinVec;
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]
@@ -17,6 +21,79 @@ pub struct SourceInfo {
     pub start_column: i32,
     pub end_line: i32,
     pub end_column: i32,
+}
+
+impl SourceInfo {
+    pub fn get_string(&self) -> String {
+        let file = File::open(&self.file_path).unwrap();
+        let reader = BufReader::new(file);
+
+        let mut result = String::new();
+        for (line_number, line) in reader.lines().enumerate() {
+            let line_number = line_number as i32 + 1; // Convert to 1-based index
+            let line = line.unwrap();
+            if line_number < self.start_line {
+                continue;
+            }
+            if line_number > self.end_line {
+                break;
+            }
+            let start_col = if line_number == self.start_line {
+                (self.start_column - 1) as usize
+            } else {
+                0
+            };
+            let end_col = if line_number == self.end_line {
+                (self.end_column - 1) as usize
+            } else {
+                line.len()
+            };
+            if start_col <= end_col && end_col <= line.len() {
+                result.push_str(&line[start_col..end_col]);
+            }
+            if line_number < self.end_line {
+                result.push('\n');
+            }
+        }
+        result
+    }
+
+    pub fn substring_source_info(&self, start: usize, length: usize) -> SourceInfo {
+        let original = self.get_string();
+        let substring = &original[start..start + length];
+        let mut current_line = self.start_line;
+        let mut current_column = self.start_column;
+
+        // Calculate the starting line and column for the substring
+        for (_, c) in original[..start].chars().enumerate() {
+            if c == '\n' {
+                current_line += 1;
+                current_column = 1;
+            } else {
+                current_column += 1;
+            }
+        }
+        let start_line = current_line;
+        let start_column = current_column;
+        // Calculate the ending line and column for the substring
+        for c in substring.chars() {
+            if c == '\n' {
+                current_line += 1;
+                current_column = 1;
+            } else {
+                current_column += 1;
+            }
+        }
+        let end_line = current_line;
+        let end_column = current_column;
+        SourceInfo {
+            file_path: self.file_path.clone(),
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+        }
+    }
 }
 
 impl SourceInfo {
@@ -72,21 +149,230 @@ impl SourceInfo {
 }
 
 pub struct HIRBranchVisitor<'tcx> {
-    pub tcx: TyCtxt<'tcx>,
+    tcx: TyCtxt<'tcx>,
+    span_re: Regex,
+    forloop_re: Regex,
+}
+
+impl<'tcx> HIRBranchVisitor<'tcx> {
+    pub fn new(tcx: TyCtxt<'tcx>) -> Self {
+        let span_re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
+        // let forloop_re = Regex::new(r"for\s+(.+)\s+in\s+(.+)").unwrap();
+        let forloop_re = Regex::new(r"for\s+(\w+)\s+in\s+(.+)").unwrap();
+        Self {
+            tcx,
+            span_re,
+            forloop_re,
+        }
+    }
+
+    fn get_source_info(&self, span: rustc_span::Span) -> SourceInfo {
+        let span_str = format!("{:?}", span);
+        let caps = self.span_re.captures(&span_str).unwrap();
+
+        let file_path = caps.get(1).map_or("", |m| m.as_str());
+        let start_line = caps.get(2).map_or("", |m| m.as_str());
+        let start_column = caps.get(3).map_or("", |m| m.as_str());
+        let end_line = caps.get(4).map_or("", |m| m.as_str());
+        let end_column = caps.get(5).map_or("", |m| m.as_str());
+
+        SourceInfo {
+            file_path: file_path.to_string(),
+            start_line: start_line.parse::<i32>().unwrap(),
+            start_column: start_column.parse::<i32>().unwrap(),
+            end_line: end_line.parse::<i32>().unwrap(),
+            end_column: end_column.parse::<i32>().unwrap(),
+        }
+    }
+
+    fn handle_binary(
+        &mut self,
+        op: &Spanned<BinOpKind>,
+        expr_str: String,
+        lexpr: &'tcx rustc_hir::Expr<'tcx>,
+        rexpr: &'tcx rustc_hir::Expr<'tcx>,
+    ) {
+        let lhs = self.get_source_info(lexpr.span).get_string();
+        let rhs = self.get_source_info(rexpr.span).get_string();
+        let mut cmp_with_int = false;
+        if let rustc_hir::ExprKind::Lit(lit) = lexpr.kind {
+            if matches!(lit.node, rustc_ast::LitKind::Int(_, _)) {
+                cmp_with_int = true;
+            }
+        }
+        if let rustc_hir::ExprKind::Lit(lit) = rexpr.kind {
+            if matches!(lit.node, rustc_ast::LitKind::Int(_, _)) {
+                cmp_with_int = true;
+            }
+        }
+        match op.node {
+            rustc_hir::BinOpKind::And | rustc_hir::BinOpKind::Or => {
+                self.handle_expr(lexpr);
+                self.handle_expr(rexpr);
+            }
+            rustc_hir::BinOpKind::Eq => {
+                let cond = Condition::Bool(BoolCond::Binary(BinaryCond::new(
+                    BinKind::Eq,
+                    expr_str,
+                    lhs,
+                    rhs,
+                    cmp_with_int,
+                )));
+                println!("{:?}", cond);
+            }
+            rustc_hir::BinOpKind::Ne => {
+                let cond = Condition::Bool(BoolCond::Binary(BinaryCond::new(
+                    BinKind::Ne,
+                    expr_str,
+                    lhs,
+                    rhs,
+                    cmp_with_int,
+                )));
+                println!("{:?}", cond);
+            }
+            rustc_hir::BinOpKind::Ge => {
+                let cond = Condition::Bool(BoolCond::Binary(BinaryCond::new(
+                    BinKind::Ge,
+                    expr_str,
+                    lhs,
+                    rhs,
+                    cmp_with_int,
+                )));
+                println!("{:?}", cond);
+            }
+            rustc_hir::BinOpKind::Gt => {
+                let cond = Condition::Bool(BoolCond::Binary(BinaryCond::new(
+                    BinKind::Gt,
+                    expr_str,
+                    lhs,
+                    rhs,
+                    cmp_with_int,
+                )));
+                println!("{:?}", cond);
+            }
+            rustc_hir::BinOpKind::Le => {
+                let cond = Condition::Bool(BoolCond::Binary(BinaryCond::new(
+                    BinKind::Le,
+                    expr_str,
+                    lhs,
+                    rhs,
+                    cmp_with_int,
+                )));
+                println!("{:?}", cond);
+            }
+            rustc_hir::BinOpKind::Lt => {
+                let cond = Condition::Bool(BoolCond::Binary(BinaryCond::new(
+                    BinKind::Lt,
+                    expr_str,
+                    lhs,
+                    rhs,
+                    cmp_with_int,
+                )));
+                println!("{:?}", cond);
+            }
+            _ => {
+                let cond = Condition::Bool(BoolCond::Binary(BinaryCond::new(
+                    BinKind::Other,
+                    expr_str,
+                    lhs,
+                    rhs,
+                    false,
+                )));
+                println!("{:?}", cond);
+            }
+        }
+    }
+
+    fn handle_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
+        let expr_str = self.get_source_info(expr.span).get_string();
+        match &expr.kind {
+            rustc_hir::ExprKind::Binary(op, lexpr, rexpr) => {
+                // println!("Binary expression found");
+                self.handle_binary(op, expr_str, lexpr, rexpr);
+            }
+            rustc_hir::ExprKind::Unary(op, subexpr) => {
+                // println!("Unary expression found");
+                match op {
+                    rustc_hir::UnOp::Not => {
+                        // println!("Negation expression found");
+                        self.handle_expr(subexpr);
+                    }
+                    _ => {
+                        let cond = Condition::Bool(BoolCond::Other(OtherCond::new(expr_str)));
+                        println!("{:?}", cond);
+                    }
+                }
+            }
+            rustc_hir::ExprKind::Let(let_expr) => {
+                // println!("Let expression found");
+                let cond = Condition::Bool(BoolCond::Other(OtherCond::new(expr_str)));
+                println!("{:?}", cond);
+            }
+            rustc_hir::ExprKind::DropTemps(temp_expr) => {
+                // println!("DropTemps expression found");
+                self.handle_expr(temp_expr);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_forloop(&mut self, block: &rustc_hir::Block, span: rustc_span::Span) {
+        let cond_source = self.get_source_info(span);
+        println!("{:?}", cond_source);
+
+        let cond_str = cond_source.get_string();
+        if let Some(caps) = self.forloop_re.captures(&cond_str) {
+            if let Some(x_match) = caps.get(1) {
+                let x = x_match.as_str();
+                let x_start = x_match.start();
+                let x_len = x_match.end() - x_start;
+                println!("X: {}, Start: {}, Length: {}", x, x_start, x_len);
+            }
+
+            if let Some(y_match) = caps.get(2) {
+                let y = y_match.as_str();
+                let y_start = y_match.start();
+                let y_len = y_match.end() - y_start;
+                println!("Y: {}, Start: {}, Length: {}", y, y_start, y_len);
+            }
+        } else {
+            println!("No match found.");
+        }
+        // let sub_str_source = cond_source.substring_source_info(9, 15);
+        // println!("{:?}", sub_str_source);
+        // println!("{:?}", sub_str_source.get_string());
+        let cond = Condition::Bool(BoolCond::Other(OtherCond::new(cond_str)));
+        println!("{:?}", cond);
+    }
 }
 
 impl<'tcx> HIRVisitor<'tcx> for HIRBranchVisitor<'tcx> {
     fn visit_expr(&mut self, ex: &'tcx rustc_hir::Expr<'tcx>) -> Self::Result {
         match &ex.kind {
-            rustc_hir::ExprKind::If(_, _, _) => {
+            rustc_hir::ExprKind::If(cond_expr, _, _) => {
                 // Do something with the if expression
                 // println!("If expression found");
                 // println!("{:#?}", ex);
+                self.handle_expr(cond_expr);
             }
-            rustc_hir::ExprKind::Loop(_, _, _, _) => {
+            rustc_hir::ExprKind::Loop(block, _, loop_kind, span) => {
                 // Do something with the loop expression
                 // println!("Loop expression found");
                 // println!("{:#?}", ex);
+                match loop_kind {
+                    // rustc_hir::LoopSource::While => {
+                    //     let cond = Condition::Bool(BoolCond::Other(OtherCond::new("while".to_string())));
+                    //     println!("{:?}", cond);
+                    // }
+                    rustc_hir::LoopSource::ForLoop => {
+                        println!("Find ForLoop");
+                        let cond =
+                            Condition::Bool(BoolCond::Other(OtherCond::new("for".to_string())));
+                        self.handle_forloop(block, *span);
+                        println!("{:?}", cond);
+                    }
+                    _ => {}
+                }
             }
             rustc_hir::ExprKind::Match(expr, _, _) => {
                 // Do something with the match expression
@@ -102,8 +388,6 @@ impl<'tcx> HIRVisitor<'tcx> for HIRBranchVisitor<'tcx> {
                 println!("{:?}", expr_ty);
                 if let TyKind::Adt(adt_def, _) = expr_ty.kind() {
                     if adt_def.is_enum() {
-                        
-                        
                         let mut num = 0;
                         for variant in adt_def.variants() {
                             println!("Variant {}: {:?}", num, variant.name);
@@ -128,6 +412,7 @@ pub struct ASTBranchVisitor {
     pat_infos: Vec<(SourceInfo, String)>,
 }
 
+/*
 impl ASTBranchVisitor {
     pub fn new() -> Self {
         let re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
@@ -376,3 +661,4 @@ impl<'ast> ASTVisitor<'ast> for ASTBranchVisitor {
         visit::walk_expr(self, ex);
     }
 }
+ */

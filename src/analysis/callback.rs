@@ -91,12 +91,12 @@ impl rustc_driver::Callbacks for MirCheckerCallbacks {
         let query_result = _queries.parse().unwrap();
         let krate = query_result.borrow().clone();
         // println!("AST\n{:#?}", krate);
-        let mut visitor = ASTBranchVisitor::new();
+        // let mut visitor = ASTBranchVisitor::new();
         // println!("AST Branch Visitor");
-        astvisit::walk_crate::<ASTBranchVisitor>(&mut visitor, &krate);
+        // astvisit::walk_crate::<ASTBranchVisitor>(&mut visitor, &krate);
 
-        visitor.print_map();
-        self.cond_map = visitor.move_map();
+        // visitor.print_map();
+        // self.cond_map = visitor.move_map();
 
         let dir_path = "./ast";
         let file_path = format!("{}/ast.txt", dir_path);
@@ -501,6 +501,7 @@ impl FnBlocks<'_> {
         }
     }
 
+    /*
     fn iterative_dfs(&mut self) {
         // println!("-----------iterative_dfs------------");
         let mut stack: Vec<DFSCxt> = Vec::new();
@@ -576,6 +577,7 @@ impl FnBlocks<'_> {
                         if let Some(condition) = self.get_matched_cond(&cond_source) {
                             // println!("condition: {:?}", condition);
                             let mut conds = conds.clone();
+                            /* */
                             match condition {
                                 Condition::Bool(bool_cond) => {
                                     if bool_cond.eq_with_int() {
@@ -867,6 +869,7 @@ impl FnBlocks<'_> {
         }
         println!("{}", chains_str);
     }
+     */
 
     fn dump_cfg_to_dot(&self) {
         let mut graph = DiGraph::<String, String>::new();
@@ -915,7 +918,7 @@ impl MirCheckerCallbacks {
                     let mut mir = tcx.optimized_mir(item);
                     let hir = hir_krate.maybe_body_owned_by(item).unwrap();
                     // println!("HIR\n{:#?}", hir);
-                    let mut visitor = HIRBranchVisitor { tcx };
+                    let mut visitor = HIRBranchVisitor::new(tcx);
                     println!("HIR Branch Visitor");
                     hirvisit::walk_body::<HIRBranchVisitor>(&mut visitor, &hir);
 
@@ -989,7 +992,7 @@ impl MirCheckerCallbacks {
         for mut block in ret {
             block.my_cout();
             block.dump_cfg_to_dot();
-            block.iterative_dfs();
+            // block.iterative_dfs();
             // block.cond_chain_cout();
         }
     }

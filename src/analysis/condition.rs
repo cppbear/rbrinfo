@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fmt::{self, Display, Formatter},
+};
 
 use super::branchvisitor::SourceInfo;
 
@@ -10,38 +13,98 @@ pub enum Condition {
 }
 
 #[derive(Clone, Debug)]
-pub enum CmpIntKind {
-    No,
+pub enum BoolCond {
+    Binary(BinaryCond),
+    Other(OtherCond),
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum BinKind {
     Eq,
+    Lt,
+    Le,
     Ne,
+    Ge,
+    Gt,
+    Other,
+}
+
+impl Display for BinKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            BinKind::Eq => write!(f, "=="),
+            BinKind::Lt => write!(f, "<"),
+            BinKind::Le => write!(f, "<="),
+            BinKind::Ne => write!(f, "!="),
+            BinKind::Ge => write!(f, ">="),
+            BinKind::Gt => write!(f, ">"),
+            BinKind::Other => write!(f, "other"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct BoolCond {
-    cond_str: String,
-    cmp_with_int: CmpIntKind,
+pub struct BinaryCond {
+    kind: BinKind,
+    expr: String,
+    lhs: String,
+    rhs: String,
+    cmp_with_int: bool,
 }
 
-impl BoolCond {
-    pub fn new(cond_str: String, cmp_with_int: CmpIntKind) -> Self {
+impl BinaryCond {
+    pub fn new(kind: BinKind, expr: String, lhs: String, rhs: String, cmp_with_int: bool) -> Self {
         Self {
-            cond_str,
+            kind,
+            expr,
+            lhs,
+            rhs,
             cmp_with_int,
         }
     }
 
-    pub fn eq_with_int(&self) -> bool {
-        match self.cmp_with_int {
-            CmpIntKind::Eq => true,
-            _ => false,
-        }
+    pub fn get_kind(&self) -> BinKind {
+        self.kind
     }
 
-    pub fn ne_with_int(&self) -> bool {
-        match self.cmp_with_int {
-            CmpIntKind::Ne => true,
-            _ => false,
+    pub fn get_lhs(&self) -> &str {
+        &self.lhs
+    }
+
+    pub fn get_rhs(&self) -> &str {
+        &self.rhs
+    }
+
+    pub fn get_cond_str(&self) -> &str {
+        &self.expr
+    }
+
+    pub fn get_bound(&self, cond: bool) -> Option<String> {
+        match self.kind {
+            BinKind::Lt | BinKind::Gt => {
+                if !cond {
+                    return Some(format!("{} == {}", self.lhs, self.rhs));
+                }
+            }
+            BinKind::Le | BinKind::Ge => {
+                if cond {
+                    return Some(format!("{} == {}", self.lhs, self.rhs));
+                }
+            }
+            _ => return None,
         }
+        None
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct OtherCond {
+    cond_str: String,
+}
+
+impl OtherCond {
+    pub fn new(cond_str: String) -> Self {
+        Self { cond_str }
     }
 
     pub fn get_cond_str(&self) -> &str {
@@ -114,9 +177,13 @@ impl MatchCond {
         &self.match_str
     }
 
-    pub fn add_arm(&mut self, pat_source: SourceInfo, pat: String, body_source: Option<SourceInfo>) {
-        self.arms_map
-            .insert(pat_source, Arm::new(pat, body_source));
+    pub fn add_arm(
+        &mut self,
+        pat_source: SourceInfo,
+        pat: String,
+        body_source: Option<SourceInfo>,
+    ) {
+        self.arms_map.insert(pat_source, Arm::new(pat, body_source));
     }
 
     pub fn get_arms_map(&self) -> &BTreeMap<SourceInfo, Arm> {
