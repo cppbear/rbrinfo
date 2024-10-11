@@ -6,6 +6,7 @@ use rustc_ast::{
     ptr::P,
     visit::{self, Visitor as ASTVisitor},
 };
+use rustc_hir::def::DefKind;
 use rustc_hir::intravisit::{self, Visitor as HIRVisitor};
 use rustc_middle::ty::{TyCtxt, TyKind};
 use rustc_span::source_map::Spanned;
@@ -151,19 +152,12 @@ impl SourceInfo {
 pub struct HIRBranchVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
     span_re: Regex,
-    forloop_re: Regex,
 }
 
 impl<'tcx> HIRBranchVisitor<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>) -> Self {
         let span_re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
-        // let forloop_re = Regex::new(r"for\s+(.+)\s+in\s+(.+)").unwrap();
-        let forloop_re = Regex::new(r"for\s+(\w+)\s+in\s+(.+)").unwrap();
-        Self {
-            tcx,
-            span_re,
-            forloop_re,
-        }
+        Self { tcx, span_re }
     }
 
     fn get_source_info(&self, span: rustc_span::Span) -> SourceInfo {
@@ -316,33 +310,116 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
         }
     }
 
-    fn handle_forloop(&mut self, block: &rustc_hir::Block, span: rustc_span::Span) {
-        let cond_source = self.get_source_info(span);
-        println!("{:?}", cond_source);
-
-        let cond_str = cond_source.get_string();
-        if let Some(caps) = self.forloop_re.captures(&cond_str) {
-            if let Some(x_match) = caps.get(1) {
-                let x = x_match.as_str();
-                let x_start = x_match.start();
-                let x_len = x_match.end() - x_start;
-                println!("X: {}, Start: {}, Length: {}", x, x_start, x_len);
-            }
-
-            if let Some(y_match) = caps.get(2) {
-                let y = y_match.as_str();
-                let y_start = y_match.start();
-                let y_len = y_match.end() - y_start;
-                println!("Y: {}, Start: {}, Length: {}", y, y_start, y_len);
+    fn handle_forloop(&mut self, block: &rustc_hir::Block) {
+        let stmt = block.stmts[0];
+        if let rustc_hir::StmtKind::Expr(expr) = stmt.kind {
+            if let rustc_hir::ExprKind::Match(_, arms, match_kind) = expr.kind {
+                assert_eq!(match_kind, rustc_hir::MatchSource::ForLoopDesugar);
+                let range_source = self.get_source_info(expr.span);
+                let iter_source = self.get_source_info(arms[1].pat.span);
+                let cond_str = format!(
+                    "{} in {}",
+                    iter_source.get_string(),
+                    range_source.get_string()
+                );
+                let cond = Condition::Bool(BoolCond::Other(OtherCond::new(cond_str)));
+                println!("{:?}", cond);
+            } else {
+                panic!(
+                    "The ExprKind of the first stmt in ForLoop is {:?}.",
+                    expr.kind
+                );
             }
         } else {
-            println!("No match found.");
+            panic!(
+                "The StmtKind of the first stmt in ForLoop is {:?}.",
+                stmt.kind
+            );
         }
-        // let sub_str_source = cond_source.substring_source_info(9, 15);
-        // println!("{:?}", sub_str_source);
-        // println!("{:?}", sub_str_source.get_string());
-        let cond = Condition::Bool(BoolCond::Other(OtherCond::new(cond_str)));
-        println!("{:?}", cond);
+    }
+
+    fn handle_match(
+        &mut self,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+        arms: &'tcx [rustc_hir::Arm<'tcx>],
+    ) {
+        let match_source = self.get_source_info(expr.span);
+        println!("{:?}, {}", match_source, match_source.get_string());
+        let typeck_res = self.tcx.typeck(expr.hir_id.owner);
+        let expr_ty = typeck_res.expr_ty(expr);
+        println!("Type of {} is {:?}", match_source.get_string(), expr_ty);
+        if let TyKind::Adt(adt_def, _) = expr_ty.kind() {
+            if adt_def.is_enum() {
+                let mut iter = 0;
+                for variant in adt_def.variants() {
+                    println!("Variant {}: {:?}", iter, variant.name);
+                    iter += 1;
+                }
+                let mut iter = 0;
+                for arm in arms {
+                    let pat_source = self.get_source_info(arm.pat.span);
+                    println!(
+                        "Pattern {}: {:?}, {}",
+                        iter,
+                        pat_source,
+                        pat_source.get_string()
+                    );
+                    if let rustc_hir::PatKind::Path(qpath)
+                    | rustc_hir::PatKind::TupleStruct(qpath, _, _)
+                    | rustc_hir::PatKind::Struct(qpath, _, _) = arm.pat.kind
+                    {
+                        if let rustc_hir::QPath::Resolved(_, path) = qpath {
+                            println!("{:?}", path.res);
+                            match path.res {
+                                rustc_hir::def::Res::Def(
+                                    rustc_hir::def::DefKind::Ctor(
+                                        rustc_hir::def::CtorOf::Variant,
+                                        _,
+                                    ),
+                                    ctor_def_id,
+                                ) => {
+                                    let variant_index =
+                                        adt_def.variant_index_with_ctor_id(ctor_def_id);
+                                    println!("variant_index: {}", variant_index.index());
+                                }
+                                rustc_hir::def::Res::Def(
+                                    rustc_hir::def::DefKind::Variant,
+                                    variant_def_id,
+                                ) => {
+                                    let variant_index =
+                                        adt_def.variant_index_with_id(variant_def_id);
+                                    println!("variant_index: {}", variant_index.index());
+                                }
+                                _ => {
+                                    panic!("{:?}", path.res);
+                                }
+                            }
+                        } else {
+                            panic!("{:?}", qpath);
+                        }
+                    } else {
+                        panic!("{:?}", arm.pat.kind);
+                    }
+                    // TODO: handle guard
+
+                    iter += 1;
+                }
+            } else if adt_def.is_struct() {
+                // TODO: handle struct
+                let mut iter = 0;
+                for field in adt_def.all_fields() {
+                    println!("Field {}: {:?}", iter, field.name);
+                    iter += 1;
+                }
+            }
+        } else if let TyKind::Tuple(tuple_def) = expr_ty.kind() {
+            // TODO: handle tuple
+            let mut iter = 0;
+            for field_ty in *tuple_def {
+                println!("Field {}: {:?}", iter, field_ty);
+                iter += 1;
+            }
+        }
     }
 }
 
@@ -350,34 +427,18 @@ impl<'tcx> HIRVisitor<'tcx> for HIRBranchVisitor<'tcx> {
     fn visit_expr(&mut self, ex: &'tcx rustc_hir::Expr<'tcx>) -> Self::Result {
         match &ex.kind {
             rustc_hir::ExprKind::If(cond_expr, _, _) => {
-                // Do something with the if expression
-                // println!("If expression found");
-                // println!("{:#?}", ex);
                 self.handle_expr(cond_expr);
             }
-            rustc_hir::ExprKind::Loop(block, _, loop_kind, span) => {
-                // Do something with the loop expression
-                // println!("Loop expression found");
-                // println!("{:#?}", ex);
-                match loop_kind {
-                    // rustc_hir::LoopSource::While => {
-                    //     let cond = Condition::Bool(BoolCond::Other(OtherCond::new("while".to_string())));
-                    //     println!("{:?}", cond);
-                    // }
-                    rustc_hir::LoopSource::ForLoop => {
-                        println!("Find ForLoop");
-                        let cond =
-                            Condition::Bool(BoolCond::Other(OtherCond::new("for".to_string())));
-                        self.handle_forloop(block, *span);
-                        println!("{:?}", cond);
-                    }
-                    _ => {}
+            rustc_hir::ExprKind::Loop(block, _, loop_kind, _) => {
+                if let rustc_hir::LoopSource::ForLoop = loop_kind {
+                    self.handle_forloop(block);
                 }
             }
-            rustc_hir::ExprKind::Match(expr, _, _) => {
+            rustc_hir::ExprKind::Match(expr, arms, match_kind) => {
                 // Do something with the match expression
                 // println!("Match expression found");
                 // println!("{:#?}", ex);
+                /*
                 println!("{:?}", self.tcx.hir().node_to_string(expr.hir_id));
                 println!("{:?}", self.tcx.type_of(expr.hir_id.owner.to_def_id()));
                 let local_def_id = self.tcx.hir().enclosing_body_owner(expr.hir_id);
@@ -398,6 +459,10 @@ impl<'tcx> HIRVisitor<'tcx> for HIRBranchVisitor<'tcx> {
                             }
                         }
                     }
+                }
+                */
+                if let rustc_hir::MatchSource::Normal = match_kind {
+                    self.handle_match(expr, arms);
                 }
             }
             _ => {}

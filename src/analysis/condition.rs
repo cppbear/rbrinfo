@@ -50,6 +50,7 @@ pub struct BinaryCond {
     lhs: String,
     rhs: String,
     cmp_with_int: bool,
+    // TODO: handle cmp_with_(char/bool)
 }
 
 impl BinaryCond {
