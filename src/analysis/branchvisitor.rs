@@ -50,7 +50,12 @@ impl SourceInfo {
                 line.len()
             };
             if start_col <= end_col && end_col <= line.len() {
-                result.push_str(&line[start_col..end_col]);
+                let snippet = line
+                    .chars()
+                    .skip(start_col)
+                    .take(end_col - start_col)
+                    .collect::<String>();
+                result.push_str(&snippet);
             }
             if line_number < self.end_line {
                 result.push('\n');
@@ -190,13 +195,25 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
         let rhs = self.get_source_info(rexpr.span).get_string();
         let mut cmp_with_int = false;
         if let rustc_hir::ExprKind::Lit(lit) = lexpr.kind {
-            if matches!(lit.node, rustc_ast::LitKind::Int(_, _)) {
-                cmp_with_int = true;
+            match lit.node {
+                rustc_ast::LitKind::Byte(_)
+                | rustc_ast::LitKind::Char(_)
+                | rustc_ast::LitKind::Int(_, _)
+                | rustc_ast::LitKind::Bool(_) => {
+                    cmp_with_int = true;
+                }
+                _ => {}
             }
         }
         if let rustc_hir::ExprKind::Lit(lit) = rexpr.kind {
-            if matches!(lit.node, rustc_ast::LitKind::Int(_, _)) {
-                cmp_with_int = true;
+            match lit.node {
+                rustc_ast::LitKind::Byte(_)
+                | rustc_ast::LitKind::Char(_)
+                | rustc_ast::LitKind::Int(_, _)
+                | rustc_ast::LitKind::Bool(_) => {
+                    cmp_with_int = true;
+                }
+                _ => {}
             }
         }
         match op.node {
@@ -355,7 +372,7 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                     println!("Variant {}: {:?}", iter, variant.name);
                     iter += 1;
                 }
-                let mut iter = 0;
+                iter = 0;
                 for arm in arms {
                     let pat_source = self.get_source_info(arm.pat.span);
                     println!(
@@ -364,59 +381,174 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                         pat_source,
                         pat_source.get_string()
                     );
-                    if let rustc_hir::PatKind::Path(qpath)
-                    | rustc_hir::PatKind::TupleStruct(qpath, _, _)
-                    | rustc_hir::PatKind::Struct(qpath, _, _) = arm.pat.kind
-                    {
-                        if let rustc_hir::QPath::Resolved(_, path) = qpath {
-                            println!("{:?}", path.res);
-                            match path.res {
-                                rustc_hir::def::Res::Def(
-                                    rustc_hir::def::DefKind::Ctor(
-                                        rustc_hir::def::CtorOf::Variant,
-                                        _,
-                                    ),
-                                    ctor_def_id,
-                                ) => {
-                                    let variant_index =
-                                        adt_def.variant_index_with_ctor_id(ctor_def_id);
-                                    println!("variant_index: {}", variant_index.index());
-                                }
-                                rustc_hir::def::Res::Def(
-                                    rustc_hir::def::DefKind::Variant,
-                                    variant_def_id,
-                                ) => {
-                                    let variant_index =
-                                        adt_def.variant_index_with_id(variant_def_id);
-                                    println!("variant_index: {}", variant_index.index());
-                                }
-                                _ => {
-                                    panic!("{:?}", path.res);
+                    match arm.pat.kind {
+                        rustc_hir::PatKind::Path(qpath)
+                        | rustc_hir::PatKind::TupleStruct(qpath, _, _)
+                        | rustc_hir::PatKind::Struct(qpath, _, _) => match qpath {
+                            rustc_hir::QPath::Resolved(_, path) => {
+                                println!("path.res is: {:?}", path.res);
+                                match path.res {
+                                    rustc_hir::def::Res::Def(
+                                        rustc_hir::def::DefKind::Ctor(
+                                            rustc_hir::def::CtorOf::Variant,
+                                            _,
+                                        ),
+                                        ctor_def_id,
+                                    ) => {
+                                        let variant_index =
+                                            adt_def.variant_index_with_ctor_id(ctor_def_id);
+                                        println!("variant_index: {}", variant_index.index());
+                                    }
+                                    rustc_hir::def::Res::Def(
+                                        rustc_hir::def::DefKind::Variant,
+                                        variant_def_id,
+                                    ) => {
+                                        let variant_index =
+                                            adt_def.variant_index_with_id(variant_def_id);
+                                        println!("variant_index: {}", variant_index.index());
+                                    }
+                                    _ => {
+                                        panic!("path.res is: {:?}", path.res);
+                                    }
                                 }
                             }
-                        } else {
-                            panic!("{:?}", qpath);
+                            _ => {
+                                panic!("qpath is: {:?}", qpath);
+                            }
+                        },
+                        rustc_hir::PatKind::Wild => {}
+                        _ => {
+                            panic!("arm.pat.kind is: {:?}", arm.pat.kind);
                         }
-                    } else {
-                        panic!("{:?}", arm.pat.kind);
                     }
-                    // TODO: handle guard
-
+                    if let Some(guard) = &arm.guard {
+                        self.handle_expr(guard);
+                    }
                     iter += 1;
                 }
             } else if adt_def.is_struct() {
-                // TODO: handle struct
                 let mut iter = 0;
                 for field in adt_def.all_fields() {
                     println!("Field {}: {:?}", iter, field.name);
                     iter += 1;
                 }
+                iter = 0;
+                for arm in arms {
+                    let pat_source = self.get_source_info(arm.pat.span);
+                    println!(
+                        "Pattern {}: {:?}, {}",
+                        iter,
+                        pat_source,
+                        pat_source.get_string()
+                    );
+                    match arm.pat.kind {
+                        rustc_hir::PatKind::Struct(_, pat_fields, _) => {
+                            for field in pat_fields {
+                                let field_name = field.ident.name;
+                                let index = adt_def
+                                    .all_fields()
+                                    .position(|f| f.name == field_name)
+                                    .unwrap();
+                                println!("Field {}: {:?}", index, field_name);
+                                match field.pat.kind {
+                                    rustc_hir::PatKind::Lit(lit) => {
+                                        if let rustc_hir::ExprKind::Lit(lit) = lit.kind {
+                                            match lit.node {
+                                                rustc_ast::LitKind::Byte(_)
+                                                | rustc_ast::LitKind::Char(_)
+                                                | rustc_ast::LitKind::Int(_, _)
+                                                | rustc_ast::LitKind::Bool(_) => {
+                                                    let lit_str =
+                                                        self.get_source_info(lit.span).get_string();
+                                                    println!("Literal: {}", lit_str);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        rustc_hir::PatKind::TupleStruct(_, pats, _) => {
+                            for pat in pats {
+                                match pat.kind {
+                                    rustc_hir::PatKind::Lit(lit) => {
+                                        if let rustc_hir::ExprKind::Lit(lit) = lit.kind {
+                                            match lit.node {
+                                                rustc_ast::LitKind::Byte(_)
+                                                | rustc_ast::LitKind::Char(_)
+                                                | rustc_ast::LitKind::Int(_, _)
+                                                | rustc_ast::LitKind::Bool(_) => {
+                                                    let lit_str =
+                                                        self.get_source_info(lit.span).get_string();
+                                                    println!("Literal: {}", lit_str);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        rustc_hir::PatKind::Wild => {}
+                        _ => {
+                            panic!("arm.pat.kind is: {:?}", arm.pat.kind);
+                        }
+                    }
+                    if let Some(guard) = &arm.guard {
+                        self.handle_expr(guard);
+                    }
+                    iter += 1;
+                }
             }
         } else if let TyKind::Tuple(tuple_def) = expr_ty.kind() {
-            // TODO: handle tuple
             let mut iter = 0;
             for field_ty in *tuple_def {
                 println!("Field {}: {:?}", iter, field_ty);
+                iter += 1;
+            }
+            iter = 0;
+            for arm in arms {
+                let pat_source = self.get_source_info(arm.pat.span);
+                println!(
+                    "Pattern {}: {:?}, {}",
+                    iter,
+                    pat_source,
+                    pat_source.get_string()
+                );
+                match arm.pat.kind {
+                    rustc_hir::PatKind::Tuple(pats, _) => {
+                        for pat in pats {
+                            match pat.kind {
+                                rustc_hir::PatKind::Lit(lit) => {
+                                    if let rustc_hir::ExprKind::Lit(lit) = lit.kind {
+                                        match lit.node {
+                                            rustc_ast::LitKind::Byte(_)
+                                            | rustc_ast::LitKind::Char(_)
+                                            | rustc_ast::LitKind::Int(_, _)
+                                            | rustc_ast::LitKind::Bool(_) => {
+                                                let lit_str =
+                                                    self.get_source_info(lit.span).get_string();
+                                                println!("Literal: {}", lit_str);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    rustc_hir::PatKind::Wild => {}
+                    _ => {
+                        panic!("arm.pat.kind is: {:?}", arm.pat.kind);
+                    }
+                }
+                if let Some(guard) = &arm.guard {
+                    self.handle_expr(guard);
+                }
                 iter += 1;
             }
         }

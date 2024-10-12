@@ -917,16 +917,17 @@ impl MirCheckerCallbacks {
                     let mut fn_blocks: Vec<MyBlock> = vec![];
                     let mut mir = tcx.optimized_mir(item);
                     let hir = hir_krate.maybe_body_owned_by(item).unwrap();
-                    // println!("HIR\n{:#?}", hir);
-                    let mut visitor = HIRBranchVisitor::new(tcx);
-                    println!("HIR Branch Visitor");
-                    hirvisit::walk_body::<HIRBranchVisitor>(&mut visitor, &hir);
 
+                    // write HIR to file
                     let dir_path = "./hir";
                     let file_path = format!("{}/hir.txt", dir_path);
                     fs::create_dir_all(dir_path).unwrap();
                     let mut file = File::create(file_path).unwrap();
                     file.write_all(format!("{:#?}", hir).as_bytes()).unwrap();
+
+                    let mut visitor = HIRBranchVisitor::new(tcx);
+                    println!("HIR Branch Visitor");
+                    hirvisit::walk_body::<HIRBranchVisitor>(&mut visitor, &hir);
 
                     // println!("{:#?}", mir);
                     let mut mir2 = mir.clone();

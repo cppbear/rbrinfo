@@ -50,7 +50,6 @@ pub struct BinaryCond {
     lhs: String,
     rhs: String,
     cmp_with_int: bool,
-    // TODO: handle cmp_with_(char/bool)
 }
 
 impl BinaryCond {
@@ -78,6 +77,10 @@ impl BinaryCond {
 
     pub fn get_cond_str(&self) -> &str {
         &self.expr
+    }
+
+    pub fn cmp_with_int(&self) -> bool {
+        self.cmp_with_int
     }
 
     pub fn get_bound(&self, cond: bool) -> Option<String> {
@@ -142,7 +145,7 @@ impl ForCond {
 
 #[derive(Clone, Debug)]
 pub struct Arm {
-    pat: String,
+    pat: String,    // TODO: specify the more types of pat, like enum, struct, tuple, etc.
     body_source: Option<SourceInfo>,
 }
 
