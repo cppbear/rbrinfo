@@ -12,6 +12,7 @@ extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
 extern crate rustc_target;
+extern crate rustc_type_ir;
 extern crate thin_vec;
 #[macro_use]
 extern crate log;
@@ -20,9 +21,10 @@ extern crate log;
 pub mod analysis {
     // Definitions of callbacks for rustc
     mod branchvisitor;
-    mod condition;
     pub mod callback;
+    mod condition;
     pub mod option;
+    mod sourceinfo;
 }
 
 // Useful utilities

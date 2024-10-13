@@ -3,7 +3,7 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
-use super::branchvisitor::SourceInfo;
+use super::sourceinfo::SourceInfo;
 
 #[derive(Clone, Debug)]
 pub enum Condition {

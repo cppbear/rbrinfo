@@ -1,5 +1,6 @@
-use super::branchvisitor::{ASTBranchVisitor, HIRBranchVisitor, SourceInfo};
+use super::branchvisitor::{ASTBranchVisitor, HIRBranchVisitor};
 use super::condition::{Arm, Condition};
+use super::sourceinfo::SourceInfo;
 use crate::analysis::option::AnalysisOption;
 use log::info;
 use petgraph::dot::Config;
@@ -218,22 +219,7 @@ struct FnBlocks<'a> {
 
 impl FnBlocks<'_> {
     fn get_source_info(&self, span: rustc_span::Span) -> SourceInfo {
-        let span_str = format!("{:?}", span);
-        let caps = self.re.captures(&span_str).unwrap();
-
-        let file_path = caps.get(1).map_or("", |m| m.as_str());
-        let start_line = caps.get(2).map_or("", |m| m.as_str());
-        let start_column = caps.get(3).map_or("", |m| m.as_str());
-        let end_line = caps.get(4).map_or("", |m| m.as_str());
-        let end_column = caps.get(5).map_or("", |m| m.as_str());
-
-        SourceInfo {
-            file_path: file_path.to_string(),
-            start_line: start_line.parse::<i32>().unwrap(),
-            start_column: start_column.parse::<i32>().unwrap(),
-            end_line: end_line.parse::<i32>().unwrap(),
-            end_column: end_column.parse::<i32>().unwrap(),
-        }
+        SourceInfo::from_span(span, &self.re)
     }
 
     fn get_matched_cond(&self, source_info: &SourceInfo) -> Option<Condition> {
@@ -928,6 +914,7 @@ impl MirCheckerCallbacks {
                     let mut visitor = HIRBranchVisitor::new(tcx);
                     println!("HIR Branch Visitor");
                     hirvisit::walk_body::<HIRBranchVisitor>(&mut visitor, &hir);
+                    visitor.print_map();
 
                     // println!("{:#?}", mir);
                     let mut mir2 = mir.clone();
