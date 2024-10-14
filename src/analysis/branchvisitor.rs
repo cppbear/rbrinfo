@@ -202,6 +202,39 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
         }
     }
 
+    // fn handle_
+
+    fn resolve_pat_kind(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> &'tcx rustc_hir::PatKind<'tcx> {
+        match &pat.kind {
+            rustc_hir::PatKind::Ref(subpat, _) => {
+                return self.resolve_pat_kind(subpat);
+            }
+            rustc_hir::PatKind::Deref(subpat) => {
+                return self.resolve_pat_kind(subpat);
+            }
+            _ => &pat.kind,
+        }
+    }
+
+    fn handle_pat(&mut self, pat: &'tcx rustc_hir::Pat<'tcx>) {
+        let pat_kind = self.resolve_pat_kind(pat);
+        match pat_kind {
+            rustc_hir::PatKind::Or(subpats) => {
+                for subpat in *subpats {
+                    self.handle_pat(subpat);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn resolve_match_type(&self, tykind: &'tcx TyKind<'tcx>) -> &'tcx TyKind<'tcx> {
+        match tykind {
+            TyKind::Ref(_, ty, _) => self.resolve_match_type(ty.kind()),
+            _ => tykind,
+        }
+    }
+
     fn handle_match(
         &mut self,
         expr: &'tcx rustc_hir::Expr<'tcx>,
@@ -213,8 +246,80 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
         let typeck_res = self.tcx.typeck(expr.hir_id.owner);
         let expr_ty = typeck_res.expr_ty(expr);
         println!("Type of {} is {:?}", match_source.get_string(), expr_ty);
-        println!("{:?}", expr_ty.kind());
-        if let TyKind::Adt(adt_def, _) = expr_ty.kind() {
+        println!("expr_ty.kind() is {:?}", expr_ty.kind());
+        let expr_ty = self.resolve_match_type(expr_ty.kind());
+        println!("expr_ty is {:?}", expr_ty);
+        match expr_ty {
+            TyKind::Adt(adt_def, _) => {
+                if adt_def.is_enum() {
+                    println!("{:?} is enum", expr_ty);
+                    let mut iter = 0;
+                    for variant in adt_def.variants() {
+                        println!("Variant {}: {:?}", iter, variant.name);
+                        iter += 1;
+                    }
+                    iter = 0;
+                    for arm in arms {
+                        let pat_source = SourceInfo::from_span(arm.pat.span, &self.span_re);
+                        println!(
+                            "Pattern {}: {:?}, {}",
+                            iter,
+                            pat_source,
+                            pat_source.get_string()
+                        );
+                        let pat_ty = typeck_res.pat_ty(arm.pat);
+                        println!("Type of {} is {:?}", pat_source.get_string(), pat_ty);
+                        match arm.pat.kind {
+                            rustc_hir::PatKind::Path(qpath)
+                            | rustc_hir::PatKind::TupleStruct(qpath, _, _)
+                            | rustc_hir::PatKind::Struct(qpath, _, _) => match qpath {
+                                rustc_hir::QPath::Resolved(_, path) => {
+                                    println!("path.res is: {:?}", path.res);
+                                    match path.res {
+                                        rustc_hir::def::Res::Def(
+                                            rustc_hir::def::DefKind::Ctor(
+                                                rustc_hir::def::CtorOf::Variant,
+                                                _,
+                                            ),
+                                            ctor_def_id,
+                                        ) => {
+                                            let variant_index =
+                                                adt_def.variant_index_with_ctor_id(ctor_def_id);
+                                            println!("variant_index: {}", variant_index.index());
+                                        }
+                                        rustc_hir::def::Res::Def(
+                                            rustc_hir::def::DefKind::Variant,
+                                            variant_def_id,
+                                        ) => {
+                                            let variant_index =
+                                                adt_def.variant_index_with_id(variant_def_id);
+                                            println!("variant_index: {}", variant_index.index());
+                                        }
+                                        _ => {
+                                            panic!("path.res is: {:?}", path.res);
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    panic!("qpath is: {:?}", qpath);
+                                }
+                            },
+                            rustc_hir::PatKind::Wild => {}
+                            _ => {
+                                panic!("arm.pat.kind is: {:?}", arm.pat.kind);
+                            }
+                        }
+                        if let Some(guard) = &arm.guard {
+                            self.handle_expr(guard);
+                        }
+                        iter += 1;
+                    }
+                }
+            }
+            TyKind::Tuple(tuple_def) => {}
+            _ => {}
+        }
+        if let TyKind::Adt(adt_def, _) = expr_ty {
             println!("{:?} is Adt", expr_ty);
             if adt_def.is_enum() {
                 println!("{:?} is enum", expr_ty);
@@ -362,7 +467,7 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                     iter += 1;
                 }
             }
-        } else if let TyKind::Tuple(tuple_def) = expr_ty.kind() {
+        } else if let TyKind::Tuple(tuple_def) = expr_ty {
             let mut iter = 0;
             for field_ty in *tuple_def {
                 println!("Field {}: {:?}", iter, field_ty);
@@ -411,7 +516,7 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                 }
                 iter += 1;
             }
-        } else if let TyKind::Ref(_, _, _) = expr_ty.kind() {
+        } else if let TyKind::Ref(_, _, _) = expr_ty {
             println!("{:?} is ref", expr_ty);
         }
     }
