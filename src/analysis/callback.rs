@@ -911,7 +911,7 @@ impl MirCheckerCallbacks {
                     let mut file = File::create(file_path).unwrap();
                     file.write_all(format!("{:#?}", hir).as_bytes()).unwrap();
 
-                    let mut visitor = HIRBranchVisitor::new(tcx);
+                    let mut visitor = HIRBranchVisitor::new(tcx, tcx.typeck(hir.id().hir_id.owner));
                     println!("HIR Branch Visitor");
                     hirvisit::walk_body::<HIRBranchVisitor>(&mut visitor, &hir);
                     visitor.print_map();
