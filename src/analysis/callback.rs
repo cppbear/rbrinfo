@@ -222,6 +222,7 @@ impl FnBlocks<'_> {
         SourceInfo::from_span(span, &self.re)
     }
 
+    /*
     fn get_matched_cond(&self, source_info: &SourceInfo) -> Option<Condition> {
         if let Some(cond) = self.cond_map.get(source_info) {
             return Some(cond.clone());
@@ -242,9 +243,10 @@ impl FnBlocks<'_> {
 
         None
     }
+    */
 
     fn block_in_arm(&self, block: &MyBlock, arm: &Arm) -> bool {
-        if let Some(body_source) = &arm.get_body_source() {
+        if let Some(body_source) = &arm.body_source {
             for stmt in &block.statements {
                 if body_source.contains(&self.get_source_info(stmt.source_info.span)) {
                     return true;

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fmt::{self, Display, Formatter},
 };
 
@@ -15,7 +15,7 @@ pub enum Condition {
 #[derive(Clone, Debug)]
 pub enum BoolCond {
     Binary(BinaryCond),
-    Other(OtherCond),
+    Other(String),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -43,46 +43,25 @@ impl Display for BinKind {
     }
 }
 
+impl BoolCond {
+    pub fn get_cond_str(&self) -> String {
+        match self {
+            BoolCond::Binary(b) => b.get_cond_str(),
+            BoolCond::Other(s) => s.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BinaryCond {
-    kind: BinKind,
-    expr: String,
-    lhs: String,
-    rhs: String,
-    cmp_with_int: bool,
+    pub kind: BinKind,
+    pub expr: String,
+    pub lhs: String,
+    pub rhs: String,
+    pub cmp_with_int: bool,
 }
 
 impl BinaryCond {
-    pub fn new(kind: BinKind, expr: String, lhs: String, rhs: String, cmp_with_int: bool) -> Self {
-        Self {
-            kind,
-            expr,
-            lhs,
-            rhs,
-            cmp_with_int,
-        }
-    }
-
-    pub fn get_kind(&self) -> BinKind {
-        self.kind
-    }
-
-    pub fn get_lhs(&self) -> &str {
-        &self.lhs
-    }
-
-    pub fn get_rhs(&self) -> &str {
-        &self.rhs
-    }
-
-    pub fn get_cond_str(&self) -> &str {
-        &self.expr
-    }
-
-    pub fn cmp_with_int(&self) -> bool {
-        self.cmp_with_int
-    }
-
     pub fn get_bound(&self, cond: bool) -> Option<String> {
         match self.kind {
             BinKind::Lt | BinKind::Gt => {
@@ -101,96 +80,76 @@ impl BinaryCond {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct OtherCond {
-    cond_str: String,
-}
-
-impl OtherCond {
-    pub fn new(cond_str: String) -> Self {
-        Self { cond_str }
-    }
-
-    pub fn get_cond_str(&self) -> &str {
-        &self.cond_str
+impl BinaryCond {
+    pub fn get_cond_str(&self) -> String {
+        self.expr.clone()
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ForCond {
-    iter_var: String,
-    iter_range: String,
+    pub iter_var: String,
+    pub iter_range: String,
 }
 
 impl ForCond {
-    pub fn new(iter_var: String, iter_range: String) -> Self {
-        Self {
-            iter_var,
-            iter_range,
-        }
-    }
-
-    pub fn get_iter_var(&self) -> &str {
-        &self.iter_var
-    }
-
-    pub fn get_iter_range(&self) -> &str {
-        &self.iter_range
-    }
-
     pub fn get_cond_str(&self) -> String {
         format!("{} in {}", self.iter_var, self.iter_range)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Arm {
-    pat: String,    // TODO: specify the more types of pat, like enum, struct, tuple, etc.
-    body_source: Option<SourceInfo>,
+pub enum PattKind {
+    StructOrTuple(HashMap<usize, bool>),
+    Enum(usize),
+    Other,
 }
 
-impl Arm {
-    pub fn new(pat: String, body_source: Option<SourceInfo>) -> Self {
-        Self { pat, body_source }
-    }
-
-    pub fn get_pat(&self) -> &str {
-        &self.pat
-    }
-
-    pub fn get_body_source(&self) -> &Option<SourceInfo> {
-        &self.body_source
-    }
+#[derive(Clone, Debug)]
+pub struct Arm {
+    pub pat_str: String,
+    pub kind: PattKind,
+    pub body_source: Option<SourceInfo>,
 }
 
 #[derive(Clone, Debug)]
 pub struct MatchCond {
-    match_str: String,
-    pub arms_map: BTreeMap<SourceInfo, Arm>,
+    pub match_str: String,
+    pub arms: BTreeMap<SourceInfo, Arm>,
 }
 
 impl MatchCond {
     pub fn new(match_str: String) -> Self {
         Self {
             match_str,
-            arms_map: BTreeMap::new(),
+            arms: BTreeMap::new(),
         }
-    }
-
-    pub fn get_match_str(&self) -> &str {
-        &self.match_str
     }
 
     pub fn add_arm(
         &mut self,
         pat_source: SourceInfo,
-        pat: String,
+        pat_str: String,
+        kind: PattKind,
         body_source: Option<SourceInfo>,
     ) {
-        self.arms_map.insert(pat_source, Arm::new(pat, body_source));
+        self.arms.insert(
+            pat_source,
+            Arm {
+                pat_str,
+                kind,
+                body_source,
+            },
+        );
     }
+}
 
-    pub fn get_arms_map(&self) -> &BTreeMap<SourceInfo, Arm> {
-        &self.arms_map
+impl MatchCond {
+    pub fn get_cond_str(&self, pat_source: SourceInfo) -> String {
+        format!(
+            "{} is {}",
+            self.match_str,
+            self.arms.get(&pat_source).unwrap().pat_str
+        )
     }
 }
