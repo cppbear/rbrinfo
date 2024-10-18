@@ -1,9 +1,10 @@
+use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
 use regex::Regex;
 
-#[derive(Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Clone, Hash, PartialEq, PartialOrd, Eq, Ord)]
 pub struct SourceInfo {
     file_path: String,
     start_line: usize,
@@ -156,5 +157,15 @@ impl SourceInfo {
             end_line,
             end_column,
         })
+    }
+}
+
+impl Debug for SourceInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SourceInfo({}:{}:{}-{}:{})",
+            self.file_path, self.start_line, self.start_column, self.end_line, self.end_column
+        )
     }
 }

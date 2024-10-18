@@ -245,20 +245,20 @@ impl FnBlocks<'_> {
     }
     */
 
-    fn block_in_arm(&self, block: &MyBlock, arm: &Arm) -> bool {
-        if let Some(body_source) = &arm.body_source {
-            for stmt in &block.statements {
-                if body_source.contains(&self.get_source_info(stmt.source_info.span)) {
-                    return true;
-                }
-            }
-            if body_source.contains(&self.get_source_info(block.terminator.source_info.span)) {
-                return true;
-            }
-        }
+    // fn block_in_arm(&self, block: &MyBlock, arm: &Arm) -> bool {
+    //     if let Some(body_source) = &arm.body_source {
+    //         for stmt in &block.statements {
+    //             if body_source.contains(&self.get_source_info(stmt.source_info.span)) {
+    //                 return true;
+    //             }
+    //         }
+    //         if body_source.contains(&self.get_source_info(block.terminator.source_info.span)) {
+    //             return true;
+    //         }
+    //     }
 
-        false
-    }
+    //     false
+    // }
 
     fn my_cout(&self) {
         println!("{:?}", self.fn_name);

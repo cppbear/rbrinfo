@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fmt::{self, Display, Formatter},
 };
 
@@ -100,48 +100,55 @@ impl ForCond {
 
 #[derive(Clone, Debug)]
 pub enum PattKind {
-    StructOrTuple(HashMap<usize, bool>),
     Enum(usize),
+    StructOrTuple(HashMap<usize, Option<u128>>),
     Other,
 }
 
 #[derive(Clone, Debug)]
-pub struct Arm {
+pub struct Patt {
     pub pat_str: String,
     pub kind: PattKind,
-    pub body_source: Option<SourceInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Arm {
+    pub pat: Patt,
+    pub guard: Option<HashMap<SourceInfo, Condition>>,
+    pub body_source: SourceInfo,
 }
 
 #[derive(Clone, Debug)]
 pub struct MatchCond {
     pub match_str: String,
-    pub arms: BTreeMap<SourceInfo, Arm>,
+    pub arms: HashMap<SourceInfo, Arm>,
 }
 
 impl MatchCond {
     pub fn new(match_str: String) -> Self {
         Self {
             match_str,
-            arms: BTreeMap::new(),
+            arms: HashMap::new(),
         }
     }
 
-    pub fn add_arm(
-        &mut self,
-        pat_source: SourceInfo,
-        pat_str: String,
-        kind: PattKind,
-        body_source: Option<SourceInfo>,
-    ) {
-        self.arms.insert(
-            pat_source,
-            Arm {
-                pat_str,
-                kind,
-                body_source,
-            },
-        );
-    }
+    // pub fn add_arm(
+    //     &mut self,
+    //     pat_source: SourceInfo,
+    //     pat_str: String,
+    //     kind: PattKind,
+    //     body_source: Option<SourceInfo>,
+    // ) {
+    //     self.arms.insert(
+    //         pat_source,
+    //         Arm {
+    //             pat_str,
+    //             kind,
+    //             guard: None,
+    //             body_source,
+    //         },
+    //     );
+    // }
 }
 
 impl MatchCond {
@@ -149,7 +156,7 @@ impl MatchCond {
         format!(
             "{} is {}",
             self.match_str,
-            self.arms.get(&pat_source).unwrap().pat_str
+            self.arms.get(&pat_source).unwrap().pat.pat_str
         )
     }
 }
