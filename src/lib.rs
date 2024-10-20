@@ -1,6 +1,7 @@
 #![feature(rustc_private)]
 #![feature(custom_mir)]
 
+extern crate rustc_abi;
 extern crate rustc_ast;
 extern crate rustc_data_structures;
 extern crate rustc_driver;

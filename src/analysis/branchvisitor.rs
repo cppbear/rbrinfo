@@ -5,18 +5,18 @@ use super::sourceinfo::SourceInfo;
 use regex::Regex;
 use rustc_ast::BinOpKind;
 use rustc_hir::intravisit::{self, Visitor as HIRVisitor};
-use rustc_middle::ty::{TyCtxt, TyKind};
+use rustc_middle::ty::{self, TyCtxt, TyKind};
 use rustc_span::source_map::Spanned;
 use std::collections::HashMap;
 
-pub struct HIRBranchVisitor<'tcx> {
+pub struct BranchVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
     span_re: Regex,
     typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
     source_cond_map: HashMap<SourceInfo, Condition>,
 }
 
-impl<'tcx> HIRBranchVisitor<'tcx> {
+impl<'tcx> BranchVisitor<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>) -> Self {
         let span_re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
         Self {
@@ -35,16 +35,35 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
         println!("==================Condition Map==================");
     }
 
+    pub fn move_map(self) -> HashMap<SourceInfo, Condition> {
+        self.source_cond_map
+    }
+
     fn is_comparable_literal(expr: &rustc_hir::Expr) -> bool {
-        if let rustc_hir::ExprKind::Lit(lit) = expr.kind {
-            matches!(
-                lit.node,
-                rustc_ast::LitKind::Byte(_)
-                    | rustc_ast::LitKind::Char(_)
-                    | rustc_ast::LitKind::Int(_, _)
-            )
-        } else {
-            false
+        match expr.kind {
+            rustc_hir::ExprKind::Lit(lit) => {
+                matches!(
+                    lit.node,
+                    rustc_ast::LitKind::Byte(_)
+                        | rustc_ast::LitKind::Char(_)
+                        | rustc_ast::LitKind::Int(_, _)
+                )
+            }
+            rustc_hir::ExprKind::Unary(op, subexpr) => {
+                matches!(op, rustc_hir::UnOp::Neg)
+                    && match subexpr.kind {
+                        rustc_hir::ExprKind::Lit(lit) => {
+                            matches!(
+                                lit.node,
+                                rustc_ast::LitKind::Byte(_)
+                                    | rustc_ast::LitKind::Char(_)
+                                    | rustc_ast::LitKind::Int(_, _)
+                            )
+                        }
+                        _ => false,
+                    }
+            }
+            _ => false,
         }
     }
 
@@ -158,8 +177,7 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
         &self,
         pat: &'tcx rustc_hir::Pat<'tcx>,
         adt_def: &'tcx rustc_middle::ty::AdtDef<'tcx>,
-    ) -> HashMap<SourceInfo, Patt> {
-        let mut map = HashMap::new();
+    ) -> (SourceInfo, Patt) {
         let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         // let pat_ty = self.typeck_res.pat_ty(pat);
@@ -182,7 +200,7 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                                 pat_str: pat_source.get_string(),
                                 kind: PattKind::Enum(variant_index.index()),
                             };
-                            map.insert(pat_source, patt);
+                            (pat_source, patt)
                         }
                         rustc_hir::def::Res::Def(
                             rustc_hir::def::DefKind::Variant,
@@ -194,7 +212,7 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                                 pat_str: pat_source.get_string(),
                                 kind: PattKind::Enum(variant_index.index()),
                             };
-                            map.insert(pat_source, patt);
+                            (pat_source, patt)
                         }
                         _ => {
                             panic!("path.res is: {:?}", path.res);
@@ -209,24 +227,39 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                 panic!("pat_kind is: {:?}", pat.kind);
             }
         }
-        map
+    }
+
+    fn lit_to_constant(
+        &self,
+        lit_kind: &rustc_ast::LitKind,
+        width: rustc_abi::Size,
+        neg: bool,
+    ) -> u128 {
+        match lit_kind {
+            rustc_ast::LitKind::Byte(b) => *b as u128,
+            rustc_ast::LitKind::Char(ch) => *ch as u128,
+            rustc_ast::LitKind::Int(n, _) => width.truncate(if neg {
+                (n.get() as i128).overflowing_neg().0 as u128
+            } else {
+                n.get()
+            }),
+            _ => {
+                panic!("lit_kind is: {:?}", lit_kind);
+            }
+        }
     }
 
     fn handle_struct_pat(
         &self,
         pat: &'tcx rustc_hir::Pat<'tcx>,
         adt_def: &'tcx rustc_middle::ty::AdtDef<'tcx>,
-    ) -> HashMap<SourceInfo, Patt> {
-        let mut map = HashMap::new();
+    ) -> (SourceInfo, Patt) {
         let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         let pat_kind = self.resolve_pat_kind(pat);
         match pat_kind {
             rustc_hir::PatKind::Struct(_, fields, _) => {
-                let mut patt = Patt {
-                    pat_str: pat_source.get_string(),
-                    kind: PattKind::StructOrTuple(HashMap::new()),
-                };
+                let mut lit_map = HashMap::new();
                 for field in fields {
                     let field_name = field.ident.name;
                     let index = adt_def
@@ -235,27 +268,47 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                         .unwrap();
                     // println!("Field {}: {:?}", index, field_name);
                     let field_pat_kind = self.resolve_pat_kind(&field.pat);
+                    let mut mir_const = None;
                     match field_pat_kind {
-                        rustc_hir::PatKind::Lit(lit) => match lit.kind {
-                            rustc_hir::ExprKind::Lit(lit) => match lit.node {
+                        rustc_hir::PatKind::Lit(pat_lit) => match pat_lit.kind {
+                            rustc_hir::ExprKind::Lit(expr_lit) => match expr_lit.node {
                                 rustc_ast::LitKind::Byte(_)
                                 | rustc_ast::LitKind::Char(_)
                                 | rustc_ast::LitKind::Int(_, _) => {
                                     let lit_str =
-                                        SourceInfo::from_span(lit.span, &self.span_re).get_string();
-                                    println!("Literal: {}", lit_str);
+                                        SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                            .get_string();
+                                    let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
+                                    let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
+                                    let width = self.tcx.layout_of(param_ty).unwrap().size;
+                                    // println!("Field type layout: {:?}", layout);
+                                    mir_const =
+                                        Some(self.lit_to_constant(&expr_lit.node, width, false));
+                                    println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
                             },
                             rustc_hir::ExprKind::Unary(op, expr) => {
                                 assert_eq!(op, rustc_hir::UnOp::Neg);
-                                if let rustc_hir::ExprKind::Lit(lit) = expr.kind {
-                                    match lit.node {
+                                if let rustc_hir::ExprKind::Lit(expr_lit) = expr.kind {
+                                    match expr_lit.node {
                                         rustc_ast::LitKind::Int(_, _) => {
                                             let lit_str =
-                                                SourceInfo::from_span(lit.span, &self.span_re)
+                                                SourceInfo::from_span(expr_lit.span, &self.span_re)
                                                     .get_string();
-                                            println!("Literal: {}", lit_str);
+                                            let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
+                                            let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
+                                            let width = self.tcx.layout_of(param_ty).unwrap().size;
+                                            // println!("Field type layout: {:?}", layout);
+                                            mir_const = Some(self.lit_to_constant(
+                                                &expr_lit.node,
+                                                width,
+                                                true,
+                                            ));
+                                            println!(
+                                                "Literal: -{}, mir_const: {:?}",
+                                                lit_str, mir_const
+                                            );
                                         }
                                         _ => {}
                                     }
@@ -267,32 +320,64 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                         },
                         _ => {}
                     }
+                    lit_map.insert(index, mir_const);
                 }
+                let patt = Patt {
+                    pat_str: pat_source.get_string(),
+                    kind: PattKind::StructLike(lit_map),
+                };
+                (pat_source, patt)
             }
-            rustc_hir::PatKind::TupleStruct(_, fields, _) => {
+            rustc_hir::PatKind::TupleStruct(_, fields, pos) => {
+                let offset = adt_def.all_fields().count() - fields.len();
+                let mut lit_map = HashMap::new();
+                let mut index = 0;
                 for field in fields {
+                    if pos.as_opt_usize().map_or(false, |dot_pos| index == dot_pos) {
+                        index += offset;
+                    }
                     let field_pat_kind = self.resolve_pat_kind(field);
+                    let mut mir_const = None;
                     match field_pat_kind {
-                        rustc_hir::PatKind::Lit(lit) => match lit.kind {
-                            rustc_hir::ExprKind::Lit(lit) => match lit.node {
+                        rustc_hir::PatKind::Lit(pat_lit) => match pat_lit.kind {
+                            rustc_hir::ExprKind::Lit(expr_lit) => match expr_lit.node {
                                 rustc_ast::LitKind::Byte(_)
                                 | rustc_ast::LitKind::Char(_)
                                 | rustc_ast::LitKind::Int(_, _) => {
                                     let lit_str =
-                                        SourceInfo::from_span(lit.span, &self.span_re).get_string();
-                                    println!("Literal: {}", lit_str);
+                                        SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                            .get_string();
+                                    let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
+                                    let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
+                                    let width = self.tcx.layout_of(param_ty).unwrap().size;
+                                    // println!("Field type layout: {:?}", layout);
+                                    mir_const =
+                                        Some(self.lit_to_constant(&expr_lit.node, width, false));
+                                    println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
                             },
                             rustc_hir::ExprKind::Unary(op, expr) => {
                                 assert_eq!(op, rustc_hir::UnOp::Neg);
-                                if let rustc_hir::ExprKind::Lit(lit) = expr.kind {
-                                    match lit.node {
+                                if let rustc_hir::ExprKind::Lit(expr_lit) = expr.kind {
+                                    match expr_lit.node {
                                         rustc_ast::LitKind::Int(_, _) => {
                                             let lit_str =
-                                                SourceInfo::from_span(lit.span, &self.span_re)
+                                                SourceInfo::from_span(expr_lit.span, &self.span_re)
                                                     .get_string();
-                                            println!("Literal: {}", lit_str);
+                                            let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
+                                            let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
+                                            let width = self.tcx.layout_of(param_ty).unwrap().size;
+                                            // println!("Field type layout: {:?}", layout);
+                                            mir_const = Some(self.lit_to_constant(
+                                                &expr_lit.node,
+                                                width,
+                                                true,
+                                            ));
+                                            println!(
+                                                "Literal: -{}, mir_const: {:?}",
+                                                lit_str, mir_const
+                                            );
                                         }
                                         _ => {}
                                     }
@@ -304,13 +389,19 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                         },
                         _ => {}
                     }
+                    lit_map.insert(index, mir_const);
+                    index += 1;
                 }
+                let patt = Patt {
+                    pat_str: pat_source.get_string(),
+                    kind: PattKind::StructLike(lit_map),
+                };
+                (pat_source, patt)
             }
             _ => {
                 panic!("pat_kind is: {:?}", pat_kind);
             }
         }
-        map
     }
 
     fn handle_adt_pat(
@@ -331,12 +422,20 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                     map.extend(self.handle_adt_pat(subpat, adt_def));
                 }
             }
-            rustc_hir::PatKind::Wild => {}
+            rustc_hir::PatKind::Wild => {
+                let patt = Patt {
+                    pat_str: pat_source.get_string(),
+                    kind: PattKind::Wild,
+                };
+                map.insert(pat_source, patt);
+            }
             _ => {
                 if adt_def.is_enum() {
-                    map.extend(self.handle_enum_pat(pat, adt_def));
+                    let (pat_source, patt) = self.handle_enum_pat(pat, adt_def);
+                    map.insert(pat_source, patt);
                 } else if adt_def.is_struct() {
-                    map.extend(self.handle_struct_pat(pat, adt_def));
+                    let (pat_source, patt) = self.handle_struct_pat(pat, adt_def);
+                    map.insert(pat_source, patt);
                 }
             }
         }
@@ -359,30 +458,55 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                 }
             }
             rustc_hir::PatKind::Tuple(fields, pos) => {
-                // TODO: get the index of each pattern in the tuple
+                let offset = tuple_def.len() - fields.len();
+                let mut lit_map = HashMap::new();
+                let mut index = 0;
                 for field in fields {
+                    if pos.as_opt_usize().map_or(false, |dot_pos| index == dot_pos) {
+                        index += offset;
+                    }
                     let field_pat_kind = self.resolve_pat_kind(field);
+                    let mut mir_const = None;
                     match field_pat_kind {
-                        rustc_hir::PatKind::Lit(lit) => match lit.kind {
-                            rustc_hir::ExprKind::Lit(lit) => match lit.node {
+                        rustc_hir::PatKind::Lit(pat_lit) => match pat_lit.kind {
+                            rustc_hir::ExprKind::Lit(expr_lit) => match expr_lit.node {
                                 rustc_ast::LitKind::Byte(_)
                                 | rustc_ast::LitKind::Char(_)
                                 | rustc_ast::LitKind::Int(_, _) => {
                                     let lit_str =
-                                        SourceInfo::from_span(lit.span, &self.span_re).get_string();
-                                    println!("Literal: {}", lit_str);
+                                        SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                            .get_string();
+                                    let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
+                                    let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
+                                    let width = self.tcx.layout_of(param_ty).unwrap().size;
+                                    // println!("Field type layout: {:?}", layout);
+                                    mir_const =
+                                        Some(self.lit_to_constant(&expr_lit.node, width, false));
+                                    println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
                             },
                             rustc_hir::ExprKind::Unary(op, expr) => {
                                 assert_eq!(op, rustc_hir::UnOp::Neg);
-                                if let rustc_hir::ExprKind::Lit(lit) = expr.kind {
-                                    match lit.node {
+                                if let rustc_hir::ExprKind::Lit(expr_lit) = expr.kind {
+                                    match expr_lit.node {
                                         rustc_ast::LitKind::Int(_, _) => {
                                             let lit_str =
-                                                SourceInfo::from_span(lit.span, &self.span_re)
+                                                SourceInfo::from_span(expr_lit.span, &self.span_re)
                                                     .get_string();
-                                            println!("Literal: {}", lit_str);
+                                            let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
+                                            let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
+                                            let width = self.tcx.layout_of(param_ty).unwrap().size;
+                                            // println!("Field type layout: {:?}", layout);
+                                            mir_const = Some(self.lit_to_constant(
+                                                &expr_lit.node,
+                                                width,
+                                                true,
+                                            ));
+                                            println!(
+                                                "Literal: -{}, mir_const: {:?}",
+                                                lit_str, mir_const
+                                            );
                                         }
                                         _ => {}
                                     }
@@ -394,11 +518,100 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                         },
                         _ => {}
                     }
+                    lit_map.insert(index, mir_const);
+                    index += 1;
                 }
+                let patt = Patt {
+                    pat_str: pat_source.get_string(),
+                    kind: PattKind::StructLike(lit_map),
+                };
+                map.insert(pat_source, patt);
             }
-            rustc_hir::PatKind::Wild => {}
+            rustc_hir::PatKind::Wild => {
+                let patt = Patt {
+                    pat_str: pat_source.get_string(),
+                    kind: PattKind::Wild,
+                };
+                map.insert(pat_source, patt);
+            }
             _ => {
                 panic!("pat.kind is: {:?}", pat.kind);
+            }
+        }
+        map
+    }
+
+    fn handle_other_pat(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> HashMap<SourceInfo, Patt> {
+        let mut map = HashMap::new();
+        let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
+        let pat_kind = self.resolve_pat_kind(pat);
+        match pat_kind {
+            rustc_hir::PatKind::Or(subpats) => {
+                for subpat in subpats {
+                    map.extend(self.handle_other_pat(subpat));
+                }
+            }
+            rustc_hir::PatKind::Lit(pat_lit) => {
+                let mut mir_const = None;
+                match pat_lit.kind {
+                    rustc_hir::ExprKind::Lit(expr_lit) => match expr_lit.node {
+                        rustc_ast::LitKind::Byte(_)
+                        | rustc_ast::LitKind::Char(_)
+                        | rustc_ast::LitKind::Int(_, _) => {
+                            let lit_str =
+                                SourceInfo::from_span(expr_lit.span, &self.span_re).get_string();
+                            let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
+                            let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
+                            let width = self.tcx.layout_of(param_ty).unwrap().size;
+                            // println!("Field type layout: {:?}", layout);
+                            mir_const = Some(self.lit_to_constant(&expr_lit.node, width, false));
+                            println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
+                        }
+                        _ => {}
+                    },
+                    rustc_hir::ExprKind::Unary(op, expr) => {
+                        assert_eq!(op, rustc_hir::UnOp::Neg);
+                        if let rustc_hir::ExprKind::Lit(expr_lit) = expr.kind {
+                            match expr_lit.node {
+                                rustc_ast::LitKind::Int(_, _) => {
+                                    let lit_str =
+                                        SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                            .get_string();
+                                    let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
+                                    let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
+                                    let width = self.tcx.layout_of(param_ty).unwrap().size;
+                                    // println!("Field type layout: {:?}", layout);
+                                    mir_const =
+                                        Some(self.lit_to_constant(&expr_lit.node, width, true));
+                                    println!("Literal: -{}, mir_const: {:?}", lit_str, mir_const);
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            panic!("expr.kind is: {:?}", expr.kind);
+                        }
+                    }
+                    _ => {}
+                }
+                let patt = Patt {
+                    pat_str: pat_source.get_string(),
+                    kind: PattKind::Other(mir_const),
+                };
+                map.insert(pat_source, patt);
+            }
+            rustc_hir::PatKind::Wild => {
+                let patt = Patt {
+                    pat_str: pat_source.get_string(),
+                    kind: PattKind::Wild,
+                };
+                map.insert(pat_source, patt);
+            }
+            _ => {
+                let patt = Patt {
+                    pat_str: pat_source.get_string(),
+                    kind: PattKind::Other(None),
+                };
+                map.insert(pat_source, patt);
             }
         }
         map
@@ -438,7 +651,6 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                         };
                         cond.arms.insert(source_info, arm);
                     }
-                    // cond.arms.extend(arm_map);
                 }
             }
             TyKind::Tuple(tuple_def) => {
@@ -460,7 +672,22 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
                 }
             }
             _ => {
-                // TODO: handle other types of match expressions
+                for arm in arms {
+                    let patt_map = self.handle_other_pat(arm.pat);
+                    let mut guard_map = None;
+                    if let Some(guard) = &arm.guard {
+                        guard_map = Some(self.handle_expr(guard));
+                    }
+                    let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
+                    for (source_info, patt) in patt_map {
+                        let arm = Arm {
+                            pat: patt.clone(),
+                            guard: guard_map.clone(),
+                            body_source: body_source.clone(),
+                        };
+                        cond.arms.insert(source_info, arm);
+                    }
+                }
             }
         }
         self.source_cond_map
@@ -468,7 +695,7 @@ impl<'tcx> HIRBranchVisitor<'tcx> {
     }
 }
 
-impl<'tcx> HIRVisitor<'tcx> for HIRBranchVisitor<'tcx> {
+impl<'tcx> HIRVisitor<'tcx> for BranchVisitor<'tcx> {
     fn visit_expr(&mut self, ex: &'tcx rustc_hir::Expr<'tcx>) -> Self::Result {
         match &ex.kind {
             rustc_hir::ExprKind::If(cond_expr, _, _) => {
@@ -489,260 +716,3 @@ impl<'tcx> HIRVisitor<'tcx> for HIRBranchVisitor<'tcx> {
         intravisit::walk_expr(self, ex);
     }
 }
-
-pub struct ASTBranchVisitor {
-    re: Regex,
-    cond_map: HashMap<SourceInfo, Condition>,
-    // pat_infos: Vec<(SourceInfo, String)>,
-}
-
-/*
-impl ASTBranchVisitor {
-    pub fn new() -> Self {
-        let re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
-        Self {
-            re,
-            cond_map: BTreeMap::new(),
-            pat_infos: Vec::new(),
-        }
-    }
-
-    fn get_source_info(&self, span: rustc_span::Span) -> SourceInfo {
-        let span_str = format!("{:?}", span);
-        let caps = self.re.captures(&span_str).unwrap();
-
-        let file_path = caps.get(1).map_or("", |m| m.as_str());
-        let start_line = caps.get(2).map_or("", |m| m.as_str());
-        let start_column = caps.get(3).map_or("", |m| m.as_str());
-        let end_line = caps.get(4).map_or("", |m| m.as_str());
-        let end_column = caps.get(5).map_or("", |m| m.as_str());
-
-        SourceInfo {
-            file_path: file_path.to_string(),
-            start_line: start_line.parse::<i32>().unwrap(),
-            start_column: start_column.parse::<i32>().unwrap(),
-            end_line: end_line.parse::<i32>().unwrap(),
-            end_column: end_column.parse::<i32>().unwrap(),
-        }
-    }
-
-    fn get_string_from_span(&self, span: rustc_span::Span) -> String {
-        let SourceInfo {
-            file_path,
-            start_line,
-            start_column,
-            end_column,
-            ..
-        } = self.get_source_info(span);
-
-        // println!("File path: {}", file_path);
-        // println!("Start: line {}, column {}", start_line, start_column);
-        // println!("End: line {}, column {}", end_line, end_column);
-        let res_str = get_span_string(file_path, start_line, start_column, end_column);
-        res_str
-    }
-
-    fn handle_expr(&mut self, expr: &P<rustc_ast::Expr>) {
-        match &expr.kind {
-            rustc_ast::ExprKind::Binary(op, lexpr, rexpr) => {
-                // println!("Binary expression found");
-                match &op.node {
-                    rustc_ast::BinOpKind::And | rustc_ast::BinOpKind::Or => {
-                        self.handle_expr(lexpr);
-                        self.handle_expr(rexpr);
-                    }
-                    rustc_ast::BinOpKind::Eq => {
-                        let expr_str = self.get_string_from_span(expr.span);
-                        let mut eq_with_int = false;
-                        if let rustc_ast::ExprKind::Lit(lit) = &lexpr.kind {
-                            if matches!(lit.kind, rustc_ast::token::LitKind::Integer) {
-                                eq_with_int = true;
-                            }
-                        }
-                        if let rustc_ast::ExprKind::Lit(lit) = &rexpr.kind {
-                            if matches!(lit.kind, rustc_ast::token::LitKind::Integer) {
-                                eq_with_int = true;
-                            }
-                        }
-                        if eq_with_int {
-                            let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::Eq));
-                            self.cond_map.insert(self.get_source_info(expr.span), cond);
-                        } else {
-                            let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::No));
-                            self.cond_map.insert(self.get_source_info(expr.span), cond);
-                        }
-                    }
-                    rustc_ast::BinOpKind::Ne => {
-                        let expr_str = self.get_string_from_span(expr.span);
-                        let mut ne_with_int = false;
-                        if let rustc_ast::ExprKind::Lit(lit) = &lexpr.kind {
-                            if matches!(lit.kind, rustc_ast::token::LitKind::Integer) {
-                                ne_with_int = true;
-                            }
-                        }
-                        if let rustc_ast::ExprKind::Lit(lit) = &rexpr.kind {
-                            if matches!(lit.kind, rustc_ast::token::LitKind::Integer) {
-                                ne_with_int = true;
-                            }
-                        }
-                        if ne_with_int {
-                            let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::Ne));
-                            self.cond_map.insert(self.get_source_info(expr.span), cond);
-                        } else {
-                            let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::No));
-                            self.cond_map.insert(self.get_source_info(expr.span), cond);
-                        }
-                    }
-                    _ => {
-                        let expr_str = self.get_string_from_span(expr.span);
-                        let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::No));
-                        self.cond_map.insert(self.get_source_info(expr.span), cond);
-                    }
-                }
-            }
-            rustc_ast::ExprKind::Unary(op, subexpr) => {
-                // println!("Unary expression found");
-                match &op {
-                    rustc_ast::UnOp::Not => {
-                        // println!("Negation expression found");
-                        self.handle_expr(subexpr);
-                    }
-                    _ => {
-                        let expr_str = self.get_string_from_span(expr.span);
-                        let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::No));
-                        self.cond_map.insert(self.get_source_info(expr.span), cond);
-                    }
-                }
-            }
-            rustc_ast::ExprKind::Let(pat, _, _, _) => {
-                let expr_str = self.get_string_from_span(expr.span);
-                let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::No));
-                self.cond_map.insert(self.get_source_info(pat.span), cond);
-            }
-            rustc_ast::ExprKind::Paren(expr) => {
-                self.handle_expr(expr);
-            }
-            _ => {
-                let expr_str = self.get_string_from_span(expr.span);
-                let cond = Condition::Bool(BoolCond::new(expr_str, CmpIntKind::No));
-                self.cond_map.insert(self.get_source_info(expr.span), cond);
-            }
-        }
-    }
-
-    // fn handle_arms(&self, arms: &ThinVec<rustc_ast::Arm>) {
-    //     for arm in arms {
-    //         let pat_str = self.get_string_from_span(arm.pat.span);
-    //         println!("Pattern: {}", pat_str);
-    //         self.handle_pat(&arm.pat);
-    //     }
-    // }
-
-    fn handle_pat(&mut self, pat: &rustc_ast::Pat) {
-        match &pat.kind {
-            rustc_ast::PatKind::Or(subpats) => {
-                for subpat in subpats {
-                    self.handle_pat(subpat);
-                }
-            }
-            rustc_ast::PatKind::Paren(subpat) => {
-                self.handle_pat(subpat);
-            }
-            rustc_ast::PatKind::Struct(_, path, _, _) => {
-                let path_str = self.get_string_from_span(path.span);
-                println!("Path: {}", path_str);
-                self.pat_infos
-                    .push((self.get_source_info(path.span), path_str + "{}"));
-            }
-            rustc_ast::PatKind::TupleStruct(_, path, _) => {
-                let path_str = self.get_string_from_span(path.span);
-                println!("Path: {}", path_str);
-                self.pat_infos
-                    .push((self.get_source_info(path.span), path_str + "()"));
-            }
-            // rustc_ast::PatKind::Lit(expr) => {}
-            rustc_ast::PatKind::Wild => {
-                println!("Wildcard pattern found");
-                self.pat_infos
-                    .push((self.get_source_info(pat.span), "_".to_string()));
-            }
-            _ => {
-                let pat_str = self.get_string_from_span(pat.span);
-                println!("Pattern: {}", pat_str);
-                self.pat_infos
-                    .push((self.get_source_info(pat.span), pat_str));
-            }
-        }
-    }
-
-    pub fn print_map(&self) {
-        println!("==================Condition Map==================");
-        for (source_info, cond) in &self.cond_map {
-            println!("Source: {:?}, Condition: {:?}\n", source_info, cond);
-        }
-        println!("==================Condition Map==================");
-    }
-
-    pub fn move_map(self) -> BTreeMap<SourceInfo, Condition> {
-        self.cond_map
-    }
-}
-
-impl<'ast> ASTVisitor<'ast> for ASTBranchVisitor {
-    fn visit_expr(&mut self, ex: &'ast rustc_ast::Expr) -> Self::Result {
-        match &ex.kind {
-            rustc_ast::ExprKind::If(cond_expr, _, _)
-            | rustc_ast::ExprKind::While(cond_expr, _, _) => {
-                // Do something with the if expression
-                // println!("If expression found");
-                self.handle_expr(cond_expr);
-                // println!("{:#?}", ex);
-            }
-            rustc_ast::ExprKind::ForLoop { pat, iter, .. } => {
-                // Do something with the while expression
-                // println!("ForLoop expression found");
-                // println!("{:#?}", ex);
-                let pat_str = self.get_string_from_span(pat.span);
-                // let pat_loc = self.get_source_info(pat.span);
-                let iter_str = self.get_string_from_span(iter.span);
-                let iter_loc = self.get_source_info(iter.span);
-                let cond = Condition::For(ForCond::new(pat_str, iter_str));
-                // let source_info = pat_loc.expand(&iter_loc).unwrap();
-                // self.cond_map.insert(source_info, cond);
-                self.cond_map.insert(iter_loc, cond);
-            }
-            // rustc_ast::ExprKind::Loop(_, _, _) => {
-            //     println!("Loop expression found");
-            // }
-            rustc_ast::ExprKind::Match(match_expr, arms, _) => {
-                // Do something with the match expression
-                // println!("Match expression found");
-                // println!("{:#?}", ex);
-                let match_str = self.get_string_from_span(match_expr.span);
-                let mut match_cond = MatchCond::new(match_str);
-                // self.handle_arms(arms);
-                for arm in arms {
-                    self.pat_infos.clear();
-                    self.handle_pat(&arm.pat);
-                    if let Some(guard) = &arm.guard {
-                        self.handle_expr(guard);
-                    }
-                    let body_source = match &arm.body {
-                        Some(body) => Some(self.get_source_info(body.span)),
-                        None => None,
-                    };
-                    for (pat_source, pat) in &self.pat_infos {
-                        match_cond.add_arm(pat_source.clone(), pat.clone(), body_source.clone());
-                    }
-                }
-                self.cond_map.insert(
-                    self.get_source_info(match_expr.span),
-                    Condition::Match(match_cond),
-                );
-            }
-            _ => {}
-        }
-        visit::walk_expr(self, ex);
-    }
-}
- */

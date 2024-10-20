@@ -1,5 +1,5 @@
-use super::branchvisitor::{ASTBranchVisitor, HIRBranchVisitor};
-use super::condition::{Arm, Condition};
+use super::branchvisitor::BranchVisitor;
+use super::condition::{Arm, BoolCond, Condition, PattKind};
 use super::sourceinfo::SourceInfo;
 use crate::analysis::option::AnalysisOption;
 use log::info;
@@ -21,7 +21,7 @@ use rustc_middle::mir::Statement;
 // use rustc_middle::mir::StatementKind;
 use rustc_middle::mir::{Terminator, TerminatorKind};
 use rustc_middle::ty::TyCtxt;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 
@@ -63,7 +63,7 @@ pub fn get_span_string(
 pub struct MirCheckerCallbacks {
     pub analysis_options: AnalysisOption,
     pub source_name: String,
-    cond_map: BTreeMap<SourceInfo, Condition>,
+    cond_map: HashMap<SourceInfo, Condition>,
 }
 
 impl MirCheckerCallbacks {
@@ -71,7 +71,7 @@ impl MirCheckerCallbacks {
         Self {
             analysis_options: options,
             source_name: String::new(),
-            cond_map: BTreeMap::new(),
+            cond_map: HashMap::new(),
         }
     }
 }
@@ -214,7 +214,7 @@ struct FnBlocks<'a> {
     dominators: Dominators<BasicBlock>,
     cond_chains: Vec<Vec<(String, String)>>,
     re: Regex,
-    cond_map: BTreeMap<SourceInfo, Condition>,
+    cond_map: HashMap<SourceInfo, Condition>,
 }
 
 impl FnBlocks<'_> {
@@ -222,7 +222,6 @@ impl FnBlocks<'_> {
         SourceInfo::from_span(span, &self.re)
     }
 
-    /*
     fn get_matched_cond(&self, source_info: &SourceInfo) -> Option<Condition> {
         if let Some(cond) = self.cond_map.get(source_info) {
             return Some(cond.clone());
@@ -233,7 +232,7 @@ impl FnBlocks<'_> {
                 return Some(v.clone());
             }
             if let Condition::Match(match_cond) = v {
-                for (pat_source, _) in &match_cond.arms_map {
+                for (pat_source, _) in &match_cond.arms {
                     if *source_info == *pat_source {
                         return Some(v.clone());
                     }
@@ -243,22 +242,25 @@ impl FnBlocks<'_> {
 
         None
     }
-    */
 
-    // fn block_in_arm(&self, block: &MyBlock, arm: &Arm) -> bool {
-    //     if let Some(body_source) = &arm.body_source {
-    //         for stmt in &block.statements {
-    //             if body_source.contains(&self.get_source_info(stmt.source_info.span)) {
-    //                 return true;
-    //             }
-    //         }
-    //         if body_source.contains(&self.get_source_info(block.terminator.source_info.span)) {
-    //             return true;
-    //         }
-    //     }
+    fn block_in_arm(&self, block: &MyBlock, arm: &Arm) -> bool {
+        for stmt in &block.statements {
+            if arm
+                .body_source
+                .contains(&self.get_source_info(stmt.source_info.span))
+            {
+                return true;
+            }
+        }
+        if arm
+            .body_source
+            .contains(&self.get_source_info(block.terminator.source_info.span))
+        {
+            return true;
+        }
 
-    //     false
-    // }
+        false
+    }
 
     fn my_cout(&self) {
         println!("{:?}", self.fn_name);
@@ -489,7 +491,6 @@ impl FnBlocks<'_> {
         }
     }
 
-    /*
     fn iterative_dfs(&mut self) {
         // println!("-----------iterative_dfs------------");
         let mut stack: Vec<DFSCxt> = Vec::new();
@@ -567,31 +568,40 @@ impl FnBlocks<'_> {
                             let mut conds = conds.clone();
                             /* */
                             match condition {
-                                Condition::Bool(bool_cond) => {
-                                    if bool_cond.eq_with_int() {
-                                        conds.push((
-                                            bool_cond.get_cond_str().to_string(),
-                                            "true".to_string(),
-                                        ));
-                                    } else if bool_cond.ne_with_int() {
-                                        conds.push((
-                                            bool_cond.get_cond_str().to_string(),
-                                            "false".to_string(),
-                                        ));
-                                    } else {
-                                        if value == 0 {
+                                Condition::Bool(bool_cond) => match bool_cond {
+                                    BoolCond::Binary(bin_cond) => {
+                                        if bin_cond.eq_with_int() {
                                             conds.push((
-                                                bool_cond.get_cond_str().to_string(),
+                                                bin_cond.get_cond_str(),
+                                                "true".to_string(),
+                                            ));
+                                        } else if bin_cond.ne_with_int() {
+                                            conds.push((
+                                                bin_cond.get_cond_str(),
                                                 "false".to_string(),
                                             ));
                                         } else {
-                                            conds.push((
-                                                bool_cond.get_cond_str().to_string(),
-                                                "true".to_string(),
-                                            ));
+                                            if value == 0 {
+                                                conds.push((
+                                                    bin_cond.get_cond_str(),
+                                                    "false".to_string(),
+                                                ));
+                                            } else {
+                                                conds.push((
+                                                    bin_cond.get_cond_str(),
+                                                    "true".to_string(),
+                                                ));
+                                            }
                                         }
                                     }
-                                }
+                                    BoolCond::Other(cond_str) => {
+                                        if value == 0 {
+                                            conds.push((cond_str, "false".to_string()));
+                                        } else {
+                                            conds.push((cond_str, "true".to_string()));
+                                        }
+                                    }
+                                },
                                 Condition::For(for_cond) => {
                                     let value_str = match value {
                                         0 => "false",
@@ -602,29 +612,44 @@ impl FnBlocks<'_> {
                                 }
                                 Condition::Match(match_cond) => {
                                     let mut pat_matched = false;
-                                    for (pat_source, arm) in &match_cond.arms_map {
+                                    for (pat_source, arm) in &match_cond.arms {
                                         if cond_source == *pat_source {
                                             pat_matched = true;
-                                            // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
-                                            // if let Ok(_) = arm.get_pat().parse::<u128>() {
-                                            //     conds.push((
-                                            //         format!(
-                                            //             "{} matches {}",
-                                            //             match_cond.get_match_str(),
-                                            //             arm.get_pat()
-                                            //         ),
-                                            //         "true".to_string(),
-                                            //     ));
-                                            // } else {
-                                            //     if value == 0 {
+                                            // match arm.pat.kind {
+                                            //     PattKind::Enum(_) => {
                                             //         conds.push((
-                                            //             format!(
-                                            //                 "{} matches {}",
-                                            //                 match_cond.get_match_str(),
-                                            //                 arm.get_pat()
-                                            //             ),
-                                            //             "false".to_string(),
+                                            //             match_cond.match_str.clone(),
+                                            //             "true".to_string(),
                                             //         ));
+                                            //     }
+                                            //     PattKind::StructLike(_) => {
+                                            //         conds.push((
+                                            //             match_cond.match_str.clone(),
+                                            //             "true".to_string(),
+                                            //         ));
+                                            //     }
+                                            //     PattKind::Other(pat) => {
+                                            //         if let Some(_) = pat {
+                                            //             conds.push((
+                                            //                 format!(
+                                            //                     "{} matches {}",
+                                            //                     match_cond.match_str,
+                                            //                     arm.pat.pat_str
+                                            //                 ),
+                                            //                 "true".to_string(),
+                                            //             ));
+                                            //         } else {
+                                            //             if value == 0 {
+                                            //                 conds.push((
+                                            //                     format!(
+                                            //                         "{} matches {}",
+                                            //                         match_cond.match_str,
+                                            //                         arm.pat.pat_str
+                                            //                     ),
+                                            //                     "false".to_string(),
+                                            //                 ));
+                                            //             }
+                                            //         }
                                             //     }
                                             // }
                                             if self.block_in_arm(&self.blocks[target.index()], arm)
@@ -632,8 +657,7 @@ impl FnBlocks<'_> {
                                                 conds.push((
                                                     format!(
                                                         "{} matches {}",
-                                                        match_cond.get_match_str(),
-                                                        arm.get_pat()
+                                                        match_cond.match_str, arm.pat.pat_str
                                                     ),
                                                     "true".to_string(),
                                                 ));
@@ -641,8 +665,7 @@ impl FnBlocks<'_> {
                                                 conds.push((
                                                     format!(
                                                         "{} matches {}",
-                                                        match_cond.get_match_str(),
-                                                        arm.get_pat()
+                                                        match_cond.match_str, arm.pat.pat_str
                                                     ),
                                                     "false".to_string(),
                                                 ));
@@ -652,31 +675,17 @@ impl FnBlocks<'_> {
                                     }
                                     // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
                                     if !pat_matched {
-                                        for (_, arm) in &match_cond.arms_map {
-                                            // if let Ok(pat_value) = arm.get_pat().parse::<u128>() {
-                                            //     println!("pat_value: {:?}", pat_value);
-                                            //     if pat_value == value {
-                                            //         conds.push((
-                                            //             format!(
-                                            //                 "{} matches {}",
-                                            //                 match_cond.get_match_str(),
-                                            //                 arm.get_pat()
-                                            //             ),
-                                            //             "true".to_string(),
-                                            //         ));
-                                            //         break;
-                                            //     }
-                                            // }
+                                        for (_, arm) in &match_cond.arms {
                                             if self.block_in_arm(&self.blocks[target.index()], arm)
                                             {
                                                 conds.push((
                                                     format!(
                                                         "{} matches {}",
-                                                        match_cond.get_match_str(),
-                                                        arm.get_pat()
+                                                        match_cond.match_str, arm.pat.pat_str
                                                     ),
                                                     "true".to_string(),
                                                 ));
+                                                break;
                                             }
                                         }
                                     }
@@ -707,52 +716,37 @@ impl FnBlocks<'_> {
                         if let Some(condition) = self.get_matched_cond(&cond_source) {
                             let mut conds = conds.clone();
                             match condition {
-                                Condition::Bool(bool_cond) => {
-                                    if bool_cond.eq_with_int() {
-                                        conds.push((
-                                            bool_cond.get_cond_str().to_string(),
-                                            "false".to_string(),
-                                        ));
-                                    } else if bool_cond.ne_with_int() {
-                                        conds.push((
-                                            bool_cond.get_cond_str().to_string(),
-                                            "true".to_string(),
-                                        ));
-                                    } else {
-                                        conds.push((
-                                            bool_cond.get_cond_str().to_string(),
-                                            "true".to_string(),
-                                        ));
+                                Condition::Bool(bool_cond) => match bool_cond {
+                                    BoolCond::Binary(bin_cond) => {
+                                        if bin_cond.eq_with_int() {
+                                            conds.push((
+                                                bin_cond.get_cond_str(),
+                                                "false".to_string(),
+                                            ));
+                                        } else if bin_cond.ne_with_int() {
+                                            conds.push((
+                                                bin_cond.get_cond_str(),
+                                                "true".to_string(),
+                                            ));
+                                        } else {
+                                            conds.push((
+                                                bin_cond.get_cond_str(),
+                                                "true".to_string(),
+                                            ));
+                                        }
                                     }
-                                }
+                                    BoolCond::Other(cond_str) => {
+                                        conds.push((cond_str, "true".to_string()));
+                                    }
+                                },
                                 Condition::For(for_cond) => {
                                     conds.push((for_cond.get_cond_str(), "otherwise".to_string()));
                                 }
                                 Condition::Match(match_cond) => {
                                     let mut pat_matched = false;
-                                    for (pat_source, arm) in &match_cond.arms_map {
+                                    for (pat_source, arm) in &match_cond.arms {
                                         if cond_source == *pat_source {
                                             pat_matched = true;
-                                            // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
-                                            // if let Ok(_) = arm.get_pat().parse::<u128>() {
-                                            //     conds.push((
-                                            //         format!(
-                                            //             "{} matches {}",
-                                            //             match_cond.get_match_str(),
-                                            //             arm.get_pat()
-                                            //         ),
-                                            //         "false".to_string(),
-                                            //     ));
-                                            // } else {
-                                            //     conds.push((
-                                            //         format!(
-                                            //             "{} matches {}",
-                                            //             match_cond.get_match_str(),
-                                            //             arm.get_pat()
-                                            //         ),
-                                            //         "true".to_string(),
-                                            //     ));
-                                            // }
                                             if self.block_in_arm(
                                                 &self.blocks[targets.otherwise().index()],
                                                 arm,
@@ -760,8 +754,7 @@ impl FnBlocks<'_> {
                                                 conds.push((
                                                     format!(
                                                         "{} matches {}",
-                                                        match_cond.get_match_str(),
-                                                        arm.get_pat()
+                                                        match_cond.match_str, arm.pat.pat_str
                                                     ),
                                                     "true".to_string(),
                                                 ));
@@ -769,8 +762,7 @@ impl FnBlocks<'_> {
                                                 conds.push((
                                                     format!(
                                                         "{} matches {}",
-                                                        match_cond.get_match_str(),
-                                                        arm.get_pat()
+                                                        match_cond.match_str, arm.pat.pat_str
                                                     ),
                                                     "false".to_string(),
                                                 ));
@@ -780,7 +772,7 @@ impl FnBlocks<'_> {
                                     }
                                     if !pat_matched {
                                         // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
-                                        for (_, arm) in &match_cond.arms_map {
+                                        for (_, arm) in &match_cond.arms {
                                             if self.block_in_arm(
                                                 &self.blocks[targets.otherwise().index()],
                                                 arm,
@@ -788,8 +780,7 @@ impl FnBlocks<'_> {
                                                 conds.push((
                                                     format!(
                                                         "{} matches {}",
-                                                        match_cond.get_match_str(),
-                                                        arm.get_pat()
+                                                        match_cond.match_str, arm.pat.pat_str
                                                     ),
                                                     "true".to_string(),
                                                 ));
@@ -857,7 +848,6 @@ impl FnBlocks<'_> {
         }
         println!("{}", chains_str);
     }
-     */
 
     fn dump_cfg_to_dot(&self) {
         let mut graph = DiGraph::<String, String>::new();
@@ -913,10 +903,11 @@ impl MirCheckerCallbacks {
                     let mut file = File::create(file_path).unwrap();
                     file.write_all(format!("{:#?}", hir).as_bytes()).unwrap();
 
-                    let mut visitor = HIRBranchVisitor::new(tcx, tcx.typeck(hir.id().hir_id.owner));
+                    let mut visitor = BranchVisitor::new(tcx, tcx.typeck(hir.id().hir_id.owner));
                     println!("HIR Branch Visitor");
-                    hirvisit::walk_body::<HIRBranchVisitor>(&mut visitor, &hir);
+                    hirvisit::walk_body::<BranchVisitor>(&mut visitor, &hir);
                     visitor.print_map();
+                    self.cond_map = visitor.move_map();
 
                     // println!("{:#?}", mir);
                     let mut mir2 = mir.clone();
@@ -982,7 +973,7 @@ impl MirCheckerCallbacks {
         for mut block in ret {
             block.my_cout();
             block.dump_cfg_to_dot();
-            // block.iterative_dfs();
+            block.iterative_dfs();
             // block.cond_chain_cout();
         }
     }

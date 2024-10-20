@@ -3,6 +3,8 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
+use cargo_metadata::semver::Op;
+
 use super::sourceinfo::SourceInfo;
 
 #[derive(Clone, Debug)]
@@ -18,7 +20,7 @@ pub enum BoolCond {
     Other(String),
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BinKind {
     Eq,
     Lt,
@@ -78,6 +80,14 @@ impl BinaryCond {
         }
         None
     }
+
+    pub fn eq_with_int(&self) -> bool {
+        self.cmp_with_int && self.kind == BinKind::Eq
+    }
+
+    pub fn ne_with_int(&self) -> bool {
+        self.cmp_with_int && self.kind == BinKind::Ne
+    }
 }
 
 impl BinaryCond {
@@ -101,8 +111,9 @@ impl ForCond {
 #[derive(Clone, Debug)]
 pub enum PattKind {
     Enum(usize),
-    StructOrTuple(HashMap<usize, Option<u128>>),
-    Other,
+    StructLike(HashMap<usize, Option<u128>>),
+    Other(Option<u128>),
+    Wild,
 }
 
 #[derive(Clone, Debug)]
