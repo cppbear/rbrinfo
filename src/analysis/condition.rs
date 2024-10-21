@@ -1,11 +1,8 @@
+use super::sourceinfo::SourceInfo;
 use std::{
     collections::HashMap,
     fmt::{self, Display, Formatter},
 };
-
-use cargo_metadata::semver::Op;
-
-use super::sourceinfo::SourceInfo;
 
 #[derive(Clone, Debug)]
 pub enum Condition {

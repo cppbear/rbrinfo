@@ -222,19 +222,22 @@ impl FnBlocks<'_> {
         SourceInfo::from_span(span, &self.re)
     }
 
-    fn get_matched_cond(&self, source_info: &SourceInfo) -> Option<Condition> {
+    fn get_matched_cond(
+        &self,
+        source_info: &SourceInfo,
+    ) -> Option<(Condition, Option<SourceInfo>)> {
         if let Some(cond) = self.cond_map.get(source_info) {
-            return Some(cond.clone());
+            return Some((cond.clone(), None));
         }
 
         for (k, v) in &self.cond_map {
-            if source_info.contains(k) {
-                return Some(v.clone());
+            if source_info.contains(k) || k.contains(source_info) {
+                return Some((v.clone(), None));
             }
             if let Condition::Match(match_cond) = v {
                 for (pat_source, _) in &match_cond.arms {
-                    if *source_info == *pat_source {
-                        return Some(v.clone());
+                    if source_info.contains(pat_source) || pat_source.contains(source_info) {
+                        return Some((v.clone(), Some(pat_source.clone())));
                     }
                 }
             }
@@ -563,7 +566,7 @@ impl FnBlocks<'_> {
                     if branches.insert((block.block_name, target)) {
                         // new branch
                         // println!("source_info: {:?}", source_info);
-                        if let Some(condition) = self.get_matched_cond(&cond_source) {
+                        if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source) {
                             // println!("condition: {:?}", condition);
                             let mut conds = conds.clone();
                             /* */
@@ -611,70 +614,63 @@ impl FnBlocks<'_> {
                                     conds.push((for_cond.get_cond_str(), value_str.to_string()));
                                 }
                                 Condition::Match(match_cond) => {
-                                    let mut pat_matched = false;
-                                    for (pat_source, arm) in &match_cond.arms {
-                                        if cond_source == *pat_source {
-                                            pat_matched = true;
-                                            // match arm.pat.kind {
-                                            //     PattKind::Enum(_) => {
-                                            //         conds.push((
-                                            //             match_cond.match_str.clone(),
-                                            //             "true".to_string(),
-                                            //         ));
-                                            //     }
-                                            //     PattKind::StructLike(_) => {
-                                            //         conds.push((
-                                            //             match_cond.match_str.clone(),
-                                            //             "true".to_string(),
-                                            //         ));
-                                            //     }
-                                            //     PattKind::Other(pat) => {
-                                            //         if let Some(_) = pat {
-                                            //             conds.push((
-                                            //                 format!(
-                                            //                     "{} matches {}",
-                                            //                     match_cond.match_str,
-                                            //                     arm.pat.pat_str
-                                            //                 ),
-                                            //                 "true".to_string(),
-                                            //             ));
-                                            //         } else {
-                                            //             if value == 0 {
-                                            //                 conds.push((
-                                            //                     format!(
-                                            //                         "{} matches {}",
-                                            //                         match_cond.match_str,
-                                            //                         arm.pat.pat_str
-                                            //                     ),
-                                            //                     "false".to_string(),
-                                            //                 ));
-                                            //             }
-                                            //         }
-                                            //     }
-                                            // }
-                                            if self.block_in_arm(&self.blocks[target.index()], arm)
-                                            {
-                                                conds.push((
-                                                    format!(
-                                                        "{} matches {}",
-                                                        match_cond.match_str, arm.pat.pat_str
-                                                    ),
-                                                    "true".to_string(),
-                                                ));
-                                            } else {
-                                                conds.push((
-                                                    format!(
-                                                        "{} matches {}",
-                                                        match_cond.match_str, arm.pat.pat_str
-                                                    ),
-                                                    "false".to_string(),
-                                                ));
-                                            }
-                                            break;
+                                    // match arm.pat.kind {
+                                    //     PattKind::Enum(_) => {
+                                    //         conds.push((
+                                    //             match_cond.match_str.clone(),
+                                    //             "true".to_string(),
+                                    //         ));
+                                    //     }
+                                    //     PattKind::StructLike(_) => {
+                                    //         conds.push((
+                                    //             match_cond.match_str.clone(),
+                                    //             "true".to_string(),
+                                    //         ));
+                                    //     }
+                                    //     PattKind::Other(pat) => {
+                                    //         if let Some(_) = pat {
+                                    //             conds.push((
+                                    //                 format!(
+                                    //                     "{} matches {}",
+                                    //                     match_cond.match_str,
+                                    //                     arm.pat.pat_str
+                                    //                 ),
+                                    //                 "true".to_string(),
+                                    //             ));
+                                    //         } else {
+                                    //             if value == 0 {
+                                    //                 conds.push((
+                                    //                     format!(
+                                    //                         "{} matches {}",
+                                    //                         match_cond.match_str,
+                                    //                         arm.pat.pat_str
+                                    //                     ),
+                                    //                     "false".to_string(),
+                                    //                 ));
+                                    //             }
+                                    //         }
+                                    //     }
+                                    // }
+                                    if let Some(pat_source) = arm_source {
+                                        let arm = match_cond.arms.get(&pat_source).unwrap();
+                                        if self.block_in_arm(&self.blocks[target.index()], arm) {
+                                            conds.push((
+                                                format!(
+                                                    "{} matches {}",
+                                                    match_cond.match_str, arm.pat.pat_str
+                                                ),
+                                                "true".to_string(),
+                                            ));
+                                        } else {
+                                            conds.push((
+                                                format!(
+                                                    "{} matches {}",
+                                                    match_cond.match_str, arm.pat.pat_str
+                                                ),
+                                                "false".to_string(),
+                                            ));
                                         }
-                                    }
-                                    // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
-                                    if !pat_matched {
+                                    } else {
                                         for (_, arm) in &match_cond.arms {
                                             if self.block_in_arm(&self.blocks[target.index()], arm)
                                             {
@@ -689,6 +685,7 @@ impl FnBlocks<'_> {
                                             }
                                         }
                                     }
+                                    // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
                                 }
                             }
                             path.push(target);
@@ -700,7 +697,7 @@ impl FnBlocks<'_> {
                                 loop_paths.clone(),
                             ));
                         } else {
-                            panic!("No matched condition found");
+                            panic!("No matched condition found for {:?}", cond_source);
                         }
                     } else {
                     }
@@ -713,7 +710,7 @@ impl FnBlocks<'_> {
                 ) {
                     if branches.insert((block.block_name, targets.otherwise())) {
                         // new branch
-                        if let Some(condition) = self.get_matched_cond(&cond_source) {
+                        if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source) {
                             let mut conds = conds.clone();
                             match condition {
                                 Condition::Bool(bool_cond) => match bool_cond {
@@ -743,35 +740,29 @@ impl FnBlocks<'_> {
                                     conds.push((for_cond.get_cond_str(), "otherwise".to_string()));
                                 }
                                 Condition::Match(match_cond) => {
-                                    let mut pat_matched = false;
-                                    for (pat_source, arm) in &match_cond.arms {
-                                        if cond_source == *pat_source {
-                                            pat_matched = true;
-                                            if self.block_in_arm(
-                                                &self.blocks[targets.otherwise().index()],
-                                                arm,
-                                            ) {
-                                                conds.push((
-                                                    format!(
-                                                        "{} matches {}",
-                                                        match_cond.match_str, arm.pat.pat_str
-                                                    ),
-                                                    "true".to_string(),
-                                                ));
-                                            } else {
-                                                conds.push((
-                                                    format!(
-                                                        "{} matches {}",
-                                                        match_cond.match_str, arm.pat.pat_str
-                                                    ),
-                                                    "false".to_string(),
-                                                ));
-                                            }
-                                            break;
+                                    if let Some(pat_source) = arm_source {
+                                        let arm = match_cond.arms.get(&pat_source).unwrap();
+                                        if self.block_in_arm(
+                                            &self.blocks[targets.otherwise().index()],
+                                            arm,
+                                        ) {
+                                            conds.push((
+                                                format!(
+                                                    "{} matches {}",
+                                                    match_cond.match_str, arm.pat.pat_str
+                                                ),
+                                                "true".to_string(),
+                                            ));
+                                        } else {
+                                            conds.push((
+                                                format!(
+                                                    "{} matches {}",
+                                                    match_cond.match_str, arm.pat.pat_str
+                                                ),
+                                                "false".to_string(),
+                                            ));
                                         }
-                                    }
-                                    if !pat_matched {
-                                        // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
+                                    } else {
                                         for (_, arm) in &match_cond.arms {
                                             if self.block_in_arm(
                                                 &self.blocks[targets.otherwise().index()],
@@ -788,6 +779,7 @@ impl FnBlocks<'_> {
                                             }
                                         }
                                     }
+                                    // FIXME: need to handle the case when the arm body is empty, and locate the matched arm more accurately
                                 }
                             }
                             path.push(targets.otherwise());
