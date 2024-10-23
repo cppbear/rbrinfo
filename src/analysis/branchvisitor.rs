@@ -8,6 +8,8 @@ use rustc_hir::intravisit::{self, Visitor as HIRVisitor};
 use rustc_middle::ty::{self, TyCtxt, TyKind};
 use rustc_span::source_map::Spanned;
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Write;
 
 pub struct BranchVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
@@ -27,12 +29,13 @@ impl<'tcx> BranchVisitor<'tcx> {
         }
     }
 
-    pub fn print_map(&self) {
-        println!("==================Condition Map==================");
-        for (source_info, cond) in &self.source_cond_map {
-            println!("Source: {:?}\nCondition: {:#?}\n", source_info, cond);
-        }
-        println!("==================Condition Map==================");
+    pub fn output_map(&self) {
+        let map_str = &format!("{:#?}\n", self.source_cond_map);
+        let dir_path = "./cond_map";
+        let file_path = format!("{}/map.txt", dir_path);
+        fs::create_dir_all(dir_path).unwrap();
+        let mut file = File::create(file_path).unwrap();
+        file.write_all(map_str.as_bytes()).unwrap();
     }
 
     pub fn move_map(self) -> HashMap<SourceInfo, Condition> {
@@ -275,16 +278,16 @@ impl<'tcx> BranchVisitor<'tcx> {
                                 rustc_ast::LitKind::Byte(_)
                                 | rustc_ast::LitKind::Char(_)
                                 | rustc_ast::LitKind::Int(_, _) => {
-                                    let lit_str =
-                                        SourceInfo::from_span(expr_lit.span, &self.span_re)
-                                            .get_string();
+                                    // let lit_str =
+                                    //     SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                    //         .get_string();
                                     let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
                                     let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                     let width = self.tcx.layout_of(param_ty).unwrap().size;
                                     // println!("Field type layout: {:?}", layout);
                                     mir_const =
                                         Some(self.lit_to_constant(&expr_lit.node, width, false));
-                                    println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
+                                    // println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
                             },
@@ -293,9 +296,9 @@ impl<'tcx> BranchVisitor<'tcx> {
                                 if let rustc_hir::ExprKind::Lit(expr_lit) = expr.kind {
                                     match expr_lit.node {
                                         rustc_ast::LitKind::Int(_, _) => {
-                                            let lit_str =
-                                                SourceInfo::from_span(expr_lit.span, &self.span_re)
-                                                    .get_string();
+                                            // let lit_str =
+                                            //     SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                            //         .get_string();
                                             let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
                                             let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                             let width = self.tcx.layout_of(param_ty).unwrap().size;
@@ -305,10 +308,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                                                 width,
                                                 true,
                                             ));
-                                            println!(
-                                                "Literal: -{}, mir_const: {:?}",
-                                                lit_str, mir_const
-                                            );
+                                            // println!(
+                                            //     "Literal: -{}, mir_const: {:?}",
+                                            //     lit_str, mir_const
+                                            // );
                                         }
                                         _ => {}
                                     }
@@ -344,16 +347,16 @@ impl<'tcx> BranchVisitor<'tcx> {
                                 rustc_ast::LitKind::Byte(_)
                                 | rustc_ast::LitKind::Char(_)
                                 | rustc_ast::LitKind::Int(_, _) => {
-                                    let lit_str =
-                                        SourceInfo::from_span(expr_lit.span, &self.span_re)
-                                            .get_string();
+                                    // let lit_str =
+                                    //     SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                    //         .get_string();
                                     let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
                                     let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                     let width = self.tcx.layout_of(param_ty).unwrap().size;
                                     // println!("Field type layout: {:?}", layout);
                                     mir_const =
                                         Some(self.lit_to_constant(&expr_lit.node, width, false));
-                                    println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
+                                    // println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
                             },
@@ -362,9 +365,9 @@ impl<'tcx> BranchVisitor<'tcx> {
                                 if let rustc_hir::ExprKind::Lit(expr_lit) = expr.kind {
                                     match expr_lit.node {
                                         rustc_ast::LitKind::Int(_, _) => {
-                                            let lit_str =
-                                                SourceInfo::from_span(expr_lit.span, &self.span_re)
-                                                    .get_string();
+                                            // let lit_str =
+                                            //     SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                            //         .get_string();
                                             let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
                                             let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                             let width = self.tcx.layout_of(param_ty).unwrap().size;
@@ -374,10 +377,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                                                 width,
                                                 true,
                                             ));
-                                            println!(
-                                                "Literal: -{}, mir_const: {:?}",
-                                                lit_str, mir_const
-                                            );
+                                            // println!(
+                                            //     "Literal: -{}, mir_const: {:?}",
+                                            //     lit_str, mir_const
+                                            // );
                                         }
                                         _ => {}
                                     }
@@ -411,7 +414,7 @@ impl<'tcx> BranchVisitor<'tcx> {
     ) -> HashMap<SourceInfo, Patt> {
         let mut map = HashMap::new();
         let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
-        println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
+        // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         // let pat_ty = self.typeck_res.pat_ty(pat);
         // println!("Type of {} is {:?}", pat_source.get_string(), pat_ty);
         let pat_kind = self.resolve_pat_kind(pat);
@@ -449,7 +452,7 @@ impl<'tcx> BranchVisitor<'tcx> {
     ) -> HashMap<SourceInfo, Patt> {
         let mut map = HashMap::new();
         let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
-        println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
+        // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         let pat_kind = self.resolve_pat_kind(pat);
         match pat_kind {
             rustc_hir::PatKind::Or(subpats) => {
@@ -473,16 +476,16 @@ impl<'tcx> BranchVisitor<'tcx> {
                                 rustc_ast::LitKind::Byte(_)
                                 | rustc_ast::LitKind::Char(_)
                                 | rustc_ast::LitKind::Int(_, _) => {
-                                    let lit_str =
-                                        SourceInfo::from_span(expr_lit.span, &self.span_re)
-                                            .get_string();
+                                    // let lit_str =
+                                    //     SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                    //         .get_string();
                                     let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
                                     let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                     let width = self.tcx.layout_of(param_ty).unwrap().size;
                                     // println!("Field type layout: {:?}", layout);
                                     mir_const =
                                         Some(self.lit_to_constant(&expr_lit.node, width, false));
-                                    println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
+                                    // println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
                             },
@@ -491,9 +494,9 @@ impl<'tcx> BranchVisitor<'tcx> {
                                 if let rustc_hir::ExprKind::Lit(expr_lit) = expr.kind {
                                     match expr_lit.node {
                                         rustc_ast::LitKind::Int(_, _) => {
-                                            let lit_str =
-                                                SourceInfo::from_span(expr_lit.span, &self.span_re)
-                                                    .get_string();
+                                            // let lit_str =
+                                            //     SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                            //         .get_string();
                                             let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
                                             let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                             let width = self.tcx.layout_of(param_ty).unwrap().size;
@@ -503,10 +506,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                                                 width,
                                                 true,
                                             ));
-                                            println!(
-                                                "Literal: -{}, mir_const: {:?}",
-                                                lit_str, mir_const
-                                            );
+                                            // println!(
+                                            //     "Literal: -{}, mir_const: {:?}",
+                                            //     lit_str, mir_const
+                                            // );
                                         }
                                         _ => {}
                                     }
@@ -558,14 +561,14 @@ impl<'tcx> BranchVisitor<'tcx> {
                         rustc_ast::LitKind::Byte(_)
                         | rustc_ast::LitKind::Char(_)
                         | rustc_ast::LitKind::Int(_, _) => {
-                            let lit_str =
-                                SourceInfo::from_span(expr_lit.span, &self.span_re).get_string();
+                            // let lit_str =
+                            //     SourceInfo::from_span(expr_lit.span, &self.span_re).get_string();
                             let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
                             let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                             let width = self.tcx.layout_of(param_ty).unwrap().size;
                             // println!("Field type layout: {:?}", layout);
                             mir_const = Some(self.lit_to_constant(&expr_lit.node, width, false));
-                            println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
+                            // println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                         }
                         _ => {}
                     },
@@ -574,16 +577,16 @@ impl<'tcx> BranchVisitor<'tcx> {
                         if let rustc_hir::ExprKind::Lit(expr_lit) = expr.kind {
                             match expr_lit.node {
                                 rustc_ast::LitKind::Int(_, _) => {
-                                    let lit_str =
-                                        SourceInfo::from_span(expr_lit.span, &self.span_re)
-                                            .get_string();
+                                    // let lit_str =
+                                    //     SourceInfo::from_span(expr_lit.span, &self.span_re)
+                                    //         .get_string();
                                     let lit_ty = self.typeck_res.node_type(pat_lit.hir_id);
                                     let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                     let width = self.tcx.layout_of(param_ty).unwrap().size;
                                     // println!("Field type layout: {:?}", layout);
                                     mir_const =
                                         Some(self.lit_to_constant(&expr_lit.node, width, true));
-                                    println!("Literal: -{}, mir_const: {:?}", lit_str, mir_const);
+                                    // println!("Literal: -{}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
                             }
@@ -640,7 +643,9 @@ impl<'tcx> BranchVisitor<'tcx> {
                     let patt_map = self.handle_adt_pat(arm.pat, adt_def);
                     let mut guard_map = None;
                     if let Some(guard) = arm.guard {
-                        guard_map = Some(self.handle_expr(guard));
+                        let cond_map = self.handle_expr(guard);
+                        self.source_cond_map.extend(cond_map.clone());
+                        guard_map = Some(cond_map);
                     }
                     let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
                     for (source_info, patt) in patt_map {
@@ -658,7 +663,9 @@ impl<'tcx> BranchVisitor<'tcx> {
                     let patt_map = self.handle_tuple_pat(arm.pat, tuple_def);
                     let mut guard_map = None;
                     if let Some(guard) = &arm.guard {
-                        guard_map = Some(self.handle_expr(guard));
+                        let cond_map = self.handle_expr(guard);
+                        self.source_cond_map.extend(cond_map.clone());
+                        guard_map = Some(cond_map);
                     }
                     let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
                     for (source_info, patt) in patt_map {
@@ -676,7 +683,9 @@ impl<'tcx> BranchVisitor<'tcx> {
                     let patt_map = self.handle_other_pat(arm.pat);
                     let mut guard_map = None;
                     if let Some(guard) = &arm.guard {
-                        guard_map = Some(self.handle_expr(guard));
+                        let cond_map = self.handle_expr(guard);
+                        self.source_cond_map.extend(cond_map.clone());
+                        guard_map = Some(cond_map);
                     }
                     let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
                     for (source_info, patt) in patt_map {
