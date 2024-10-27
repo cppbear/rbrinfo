@@ -13,16 +13,17 @@ use std::io::Write;
 
 pub struct BranchVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
+    fn_source: SourceInfo,
     span_re: Regex,
     typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
     source_cond_map: HashMap<SourceInfo, Condition>,
 }
 
 impl<'tcx> BranchVisitor<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>) -> Self {
-        let span_re = Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap();
+    pub fn new(tcx: TyCtxt<'tcx>, fn_source: SourceInfo, span_re: Regex, typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>) -> Self {
         Self {
             tcx,
+            fn_source,
             span_re,
             typeck_res,
             source_cond_map: HashMap::new(),
@@ -323,7 +324,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                         },
                         _ => {}
                     }
-                    lit_map.insert(index, mir_const);
+                    lit_map.insert(index, (mir_const, SourceInfo::from_span(field.pat.span, &self.span_re)));
                 }
                 let patt = Patt {
                     pat_str: pat_source.get_string(),
@@ -392,7 +393,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                         },
                         _ => {}
                     }
-                    lit_map.insert(index, mir_const);
+                    lit_map.insert(index, (mir_const, SourceInfo::from_span(field.span, &self.span_re)));
                     index += 1;
                 }
                 let patt = Patt {
@@ -521,7 +522,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                         },
                         _ => {}
                     }
-                    lit_map.insert(index, mir_const);
+                    lit_map.insert(index, (mir_const, SourceInfo::from_span(field.span, &self.span_re)));
                     index += 1;
                 }
                 let patt = Patt {
@@ -648,11 +649,15 @@ impl<'tcx> BranchVisitor<'tcx> {
                         guard_map = Some(cond_map);
                     }
                     let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
+                    let mut source_wrapper = None;
+                    if self.fn_source.contains(&body_source) {
+                        source_wrapper = Some(body_source);
+                    }
                     for (source_info, patt) in patt_map {
                         let arm = Arm {
                             pat: patt.clone(),
                             guard: guard_map.clone(),
-                            body_source: body_source.clone(),
+                            body_source: source_wrapper.clone(),
                         };
                         cond.arms.insert(source_info, arm);
                     }
@@ -668,11 +673,15 @@ impl<'tcx> BranchVisitor<'tcx> {
                         guard_map = Some(cond_map);
                     }
                     let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
+                    let mut source_wrapper = None;
+                    if self.fn_source.contains(&body_source) {
+                        source_wrapper = Some(body_source);
+                    }
                     for (source_info, patt) in patt_map {
                         let arm = Arm {
                             pat: patt.clone(),
                             guard: guard_map.clone(),
-                            body_source: body_source.clone(),
+                            body_source: source_wrapper.clone(),
                         };
                         cond.arms.insert(source_info, arm);
                     }
@@ -688,11 +697,15 @@ impl<'tcx> BranchVisitor<'tcx> {
                         guard_map = Some(cond_map);
                     }
                     let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
+                    let mut source_wrapper = None;
+                    if self.fn_source.contains(&body_source) {
+                        source_wrapper = Some(body_source);
+                    }
                     for (source_info, patt) in patt_map {
                         let arm = Arm {
                             pat: patt.clone(),
                             guard: guard_map.clone(),
-                            body_source: body_source.clone(),
+                            body_source: source_wrapper.clone(),
                         };
                         cond.arms.insert(source_info, arm);
                     }

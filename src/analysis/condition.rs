@@ -108,7 +108,7 @@ impl ForCond {
 #[derive(Clone, Debug)]
 pub enum PattKind {
     Enum(usize),
-    StructLike(HashMap<usize, Option<u128>>),
+    StructLike(HashMap<usize, (Option<u128>, SourceInfo)>),   // TODO: add SourceInfo of the pattern
     Other(Option<u128>),
     Wild,
 }
@@ -123,7 +123,7 @@ pub struct Patt {
 pub struct Arm {
     pub pat: Patt,
     pub guard: Option<HashMap<SourceInfo, Condition>>,
-    pub body_source: SourceInfo,
+    pub body_source: Option<SourceInfo>,
 }
 
 #[derive(Clone, Debug)]
