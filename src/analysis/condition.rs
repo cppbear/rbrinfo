@@ -127,15 +127,34 @@ pub struct Arm {
 }
 
 #[derive(Clone, Debug)]
+pub enum MatchKind {
+    Enum(Vec<String>),
+    StructLike(Option<Vec<String>>),
+    Other,
+}
+
+impl MatchKind {
+    pub fn get_field_name(&self, idx: usize) -> String {
+        match self {
+            MatchKind::Enum(variants) => variants[idx].clone(),
+            MatchKind::StructLike(Some(fields)) => fields[idx].clone(),
+            _ => idx.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct MatchCond {
     pub match_str: String,
+    pub match_kind: MatchKind,
     pub arms: HashMap<SourceInfo, Arm>,
 }
 
 impl MatchCond {
-    pub fn new(match_str: String) -> Self {
+    pub fn new(match_str: String, match_kind: MatchKind) -> Self {
         Self {
             match_str,
+            match_kind,
             arms: HashMap::new(),
         }
     }

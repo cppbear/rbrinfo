@@ -1,5 +1,5 @@
 use super::condition::{
-    Arm, BinKind, BinaryCond, BoolCond, Condition, ForCond, MatchCond, Patt, PattKind,
+    Arm, BinKind, BinaryCond, BoolCond, Condition, ForCond, MatchCond, MatchKind, Patt, PattKind,
 };
 use super::sourceinfo::SourceInfo;
 use regex::Regex;
@@ -20,7 +20,12 @@ pub struct BranchVisitor<'tcx> {
 }
 
 impl<'tcx> BranchVisitor<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, fn_source: SourceInfo, span_re: Regex, typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>) -> Self {
+    pub fn new(
+        tcx: TyCtxt<'tcx>,
+        fn_source: SourceInfo,
+        span_re: Regex,
+        typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
+    ) -> Self {
         Self {
             tcx,
             fn_source,
@@ -324,7 +329,13 @@ impl<'tcx> BranchVisitor<'tcx> {
                         },
                         _ => {}
                     }
-                    lit_map.insert(index, (mir_const, SourceInfo::from_span(field.pat.span, &self.span_re)));
+                    lit_map.insert(
+                        index,
+                        (
+                            mir_const,
+                            SourceInfo::from_span(field.pat.span, &self.span_re),
+                        ),
+                    );
                 }
                 let patt = Patt {
                     pat_str: pat_source.get_string(),
@@ -393,7 +404,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                         },
                         _ => {}
                     }
-                    lit_map.insert(index, (mir_const, SourceInfo::from_span(field.span, &self.span_re)));
+                    lit_map.insert(
+                        index,
+                        (mir_const, SourceInfo::from_span(field.span, &self.span_re)),
+                    );
                     index += 1;
                 }
                 let patt = Patt {
@@ -522,7 +536,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                         },
                         _ => {}
                     }
-                    lit_map.insert(index, (mir_const, SourceInfo::from_span(field.span, &self.span_re)));
+                    lit_map.insert(
+                        index,
+                        (mir_const, SourceInfo::from_span(field.span, &self.span_re)),
+                    );
                     index += 1;
                 }
                 let patt = Patt {
@@ -634,12 +651,30 @@ impl<'tcx> BranchVisitor<'tcx> {
         arms: &'tcx [rustc_hir::Arm<'tcx>],
     ) {
         let match_source = SourceInfo::from_span(expr.span, &self.span_re);
-        let mut cond = MatchCond::new(match_source.get_string());
         let expr_ty = self.typeck_res.expr_ty(expr);
         let expr_ty = self.resolve_match_type(expr_ty.kind());
+        let mut cond;
 
         match expr_ty {
             TyKind::Adt(adt_def, _) => {
+                let match_kind = if adt_def.is_enum() {
+                    MatchKind::Enum(
+                        adt_def
+                            .variants()
+                            .iter()
+                            .map(|variant| variant.name.to_string())
+                            .collect(),
+                    )
+                } else if adt_def.is_struct() {
+                    let field_names = adt_def
+                        .all_fields()
+                        .map(|field| field.name.to_string())
+                        .collect();
+                    MatchKind::StructLike(Some(field_names))
+                } else {
+                    MatchKind::Other
+                };
+                cond = MatchCond::new(match_source.get_string(), match_kind);
                 for arm in arms {
                     let patt_map = self.handle_adt_pat(arm.pat, adt_def);
                     let mut guard_map = None;
@@ -664,6 +699,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                 }
             }
             TyKind::Tuple(tuple_def) => {
+                cond = MatchCond::new(match_source.get_string(), MatchKind::StructLike(None));
                 for arm in arms {
                     let patt_map = self.handle_tuple_pat(arm.pat, tuple_def);
                     let mut guard_map = None;
@@ -688,6 +724,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                 }
             }
             _ => {
+                cond = MatchCond::new(match_source.get_string(), MatchKind::Other);
                 for arm in arms {
                     let patt_map = self.handle_other_pat(arm.pat);
                     let mut guard_map = None;
