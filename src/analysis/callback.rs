@@ -823,9 +823,10 @@ impl FnBlocks<'_> {
         &self,
         stack: &mut Vec<DFSCxt>,
         block_name: BasicBlock,
-        path: &mut Vec<BasicBlock>,
-        conds: &mut Vec<(String, String)>,
-        branches: &mut HashSet<(BasicBlock, BasicBlock)>,
+        path: &Vec<BasicBlock>,
+        conds: &Vec<(String, String)>,
+        branches: &HashSet<(BasicBlock, BasicBlock)>,
+        loop_paths: &Vec<Vec<BasicBlock>>,
 
         targets: &SwitchTargets,
         match_cond: &MatchCond,
@@ -840,6 +841,9 @@ impl FnBlocks<'_> {
                 PattKind::Enum(index) => {
                     // common branches
                     for (value, target) in targets.iter() {
+                        let mut path = path.clone();
+                        let mut conds = conds.clone();
+                        let mut branches = branches.clone();
                         if branches.insert((block_name, target)) {
                             // new branch
                             if value == index as u128 {
@@ -848,10 +852,20 @@ impl FnBlocks<'_> {
                                     "true".to_string(),
                                 ));
                             }
-                            // TODO: push path and stack
+                            path.push(target);
+                            stack.push(DFSCxt::new(
+                                target,
+                                path,
+                                conds,
+                                branches,
+                                loop_paths.clone(),
+                            ));
                         }
                     }
                     // otherwise branch
+                    let mut path = path.clone();
+                    let mut conds = conds.clone();
+                    let mut branches = branches.clone();
                     if !matches!(
                         self.blocks[targets.otherwise().index()].terminator.kind,
                         TerminatorKind::Unreachable
@@ -862,7 +876,14 @@ impl FnBlocks<'_> {
                             format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                             "false".to_string(),
                         ));
-                        // TODO: push path and stack
+                        path.push(targets.otherwise());
+                        stack.push(DFSCxt::new(
+                            targets.otherwise(),
+                            path,
+                            conds,
+                            branches,
+                            loop_paths.clone(),
+                        ));
                     }
                 }
                 PattKind::Wild => {
@@ -886,6 +907,7 @@ impl FnBlocks<'_> {
         path: &mut Vec<BasicBlock>,
         conds: &mut Vec<(String, String)>,
         branches: &mut HashSet<(BasicBlock, BasicBlock)>,
+        loop_paths: &Vec<Vec<BasicBlock>>,
 
         cond_source: &SourceInfo,
         discr: &Operand,
@@ -1109,6 +1131,7 @@ impl FnBlocks<'_> {
         path: &mut Vec<BasicBlock>,
         conds: &mut Vec<(String, String)>,
         branches: &mut HashSet<(BasicBlock, BasicBlock)>,
+        loop_paths: &Vec<Vec<BasicBlock>>,
 
         targets: &SwitchTargets,
         match_cond: &MatchCond,
@@ -1297,9 +1320,10 @@ impl FnBlocks<'_> {
                             self.handle_enum_match(
                                 stack,
                                 block_name,
-                                &mut path,
-                                &mut conds,
-                                &mut branches,
+                                &path,
+                                &conds,
+                                &branches,
+                                loop_paths,
                                 targets,
                                 &match_cond,
                                 &arm_source,
@@ -1312,6 +1336,7 @@ impl FnBlocks<'_> {
                                 &mut path,
                                 &mut conds,
                                 &mut branches,
+                                loop_paths,
                                 &cond_source,
                                 discr,
                                 targets,
@@ -1326,6 +1351,7 @@ impl FnBlocks<'_> {
                                 &mut path,
                                 &mut conds,
                                 &mut branches,
+                                loop_paths,
                                 targets,
                                 &match_cond,
                                 &arm_source,
