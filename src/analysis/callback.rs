@@ -822,16 +822,19 @@ impl FnBlocks<'_> {
     fn handle_enum_match(
         &self,
         stack: &mut Vec<DFSCxt>,
-        block_name: BasicBlock,
-        path: &Vec<BasicBlock>,
-        conds: &Vec<(String, String)>,
-        branches: &HashSet<(BasicBlock, BasicBlock)>,
-        loop_paths: &Vec<Vec<BasicBlock>>,
-
+        dfs_cxt: &DFSCxt,
         targets: &SwitchTargets,
         match_cond: &MatchCond,
         arm_source: &Option<Vec<SourceInfo>>,
     ) {
+        let DFSCxt {
+            block,
+            path,
+            conds,
+            branches,
+            loop_paths,
+        } = dfs_cxt;
+        let block_name = *block;
         if let Some(pat_sources) = arm_source {
             // Span of Terminator points to a arm pattern
             error!("Span of Terminator for Enum points to an arm pattern, this is NOT common. Check {:?}", block_name);
@@ -1051,26 +1054,29 @@ impl FnBlocks<'_> {
     fn handle_structlike_match(
         &self,
         stack: &mut Vec<DFSCxt>,
-        block_name: BasicBlock,
-        path: &Vec<BasicBlock>,
-        conds: &Vec<(String, String)>,
-        branches: &HashSet<(BasicBlock, BasicBlock)>,
-        loop_paths: &Vec<Vec<BasicBlock>>,
-
+        dfs_cxt: &DFSCxt,
         cond_source: &SourceInfo,
         discr: &Operand,
         targets: &SwitchTargets,
         match_cond: &MatchCond,
         arm_source: &Option<Vec<SourceInfo>>,
     ) {
+        let succ_size = targets.iter().len() + 1;
+        assert!(succ_size <= 2);
+        let DFSCxt {
+            block,
+            path,
+            conds,
+            branches,
+            loop_paths,
+        } = dfs_cxt;
+        let block_name = *block;
         if let Some(pat_sources) = arm_source {
             // Span of Terminator points to a arm pattern
             info!("Span of Terminator points to a arm pattern");
             assert_eq!(pat_sources.len(), 1);
             let arm = match_cond.arms.get(&pat_sources[0]).unwrap();
             // common branches
-            let succ_size = targets.iter().len() + 1;
-            assert!(succ_size <= 2);
             for (value, target) in targets.iter() {
                 let mut branches = branches.clone();
                 if branches.insert((block_name, target)) {
@@ -1304,33 +1310,183 @@ impl FnBlocks<'_> {
         } else {
             // Span of Terminator does NOT point to a arm pattern, just "match XXX"
             info!("Span of Terminator does NOT point to a arm pattern");
-            // TODO:
+            // common branches
+            for (value, target) in targets.iter() {
+                let mut branches = branches.clone();
+                if branches.insert((block_name, target)) {
+                    // new branch
+                    let mut path = path.clone();
+                    let mut conds = conds.clone();
+
+                    'arms: for (arm_source, arm) in &match_cond.arms {
+                        match &arm.pat.kind {
+                            PattKind::StructLike(field_map) => match discr {
+                                Operand::Copy(place) | Operand::Move(place) => {
+                                    for proj in place.projection.iter() {
+                                        if let rustc_middle::mir::ProjectionElem::Field(idx, _) =
+                                            proj
+                                        {
+                                            if let Some((lit, source)) = field_map.get(&idx.index())
+                                            {
+                                                if let Some(lit) = lit {
+                                                    if value == *lit {
+                                                        conds.push((
+                                                            format!(
+                                                                "{}.{} matches {}",
+                                                                match_cond.match_str,
+                                                                match_cond
+                                                                    .match_kind
+                                                                    .get_field_name(idx.index()),
+                                                                source.get_string()
+                                                            ),
+                                                            "true".to_string(),
+                                                        ));
+                                                        break 'arms;
+                                                    }
+                                                }
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            },
+                            PattKind::Wild => {}
+                            _ => {
+                                panic!(
+                                    "Invalid pattern kind for Enum. Check Arm of {:?}",
+                                    arm_source
+                                );
+                            }
+                        }
+                    }
+                    // Check if the target block is in the arm body
+                    for (_, arm) in &match_cond.arms {
+                        if self.block_in_arm(&self.blocks[target.index()], arm) {
+                            conds.push((
+                                format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
+                                "true".to_string(),
+                            ));
+                            break;
+                        }
+                    }
+
+                    path.push(target);
+                    stack.push(DFSCxt::new(
+                        target,
+                        path,
+                        conds,
+                        branches,
+                        loop_paths.clone(),
+                    ));
+                }
+            }
+            // otherwise branch
+            let cmp_value = if targets.iter().len() == 1 {
+                Some(targets.iter().next().unwrap().0)
+            } else {
+                None
+            };
+            let mut branches = branches.clone();
+            if !matches!(
+                self.blocks[targets.otherwise().index()].terminator.kind,
+                TerminatorKind::Unreachable
+            ) && branches.insert((block_name, targets.otherwise()))
+            {
+                // new branch
+                let mut path = path.clone();
+                let mut conds = conds.clone();
+
+                'arms: for (arm_source, arm) in &match_cond.arms {
+                    match &arm.pat.kind {
+                        PattKind::StructLike(field_map) => match discr {
+                            Operand::Copy(place) | Operand::Move(place) => {
+                                for proj in place.projection.iter() {
+                                    if let rustc_middle::mir::ProjectionElem::Field(idx, _) = proj {
+                                        if let Some((lit, source)) = field_map.get(&idx.index()) {
+                                            if let Some(lit) = lit {
+                                                if let Some(cmp_value) = cmp_value {
+                                                    if cmp_value == *lit {
+                                                        conds.push((
+                                                            format!(
+                                                                "{}.{} matches {}",
+                                                                match_cond.match_str,
+                                                                match_cond
+                                                                    .match_kind
+                                                                    .get_field_name(idx.index()),
+                                                                source.get_string()
+                                                            ),
+                                                            "false".to_string(),
+                                                        ));
+                                                        break 'arms;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        },
+                        PattKind::Wild => {}
+                        _ => {
+                            panic!(
+                                "Invalid pattern kind for Enum. Check Arm of {:?}",
+                                arm_source
+                            );
+                        }
+                    }
+                }
+                // Check if the target block is in the arm body
+                for (_, arm) in &match_cond.arms {
+                    if self.block_in_arm(&self.blocks[targets.otherwise().index()], arm) {
+                        conds.push((
+                            format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
+                            "true".to_string(),
+                        ));
+                        break;
+                    }
+                }
+
+                path.push(targets.otherwise());
+                stack.push(DFSCxt::new(
+                    targets.otherwise(),
+                    path,
+                    conds,
+                    branches,
+                    loop_paths.clone(),
+                ));
+            }
         }
     }
 
     fn handle_other_match(
         &self,
         stack: &mut Vec<DFSCxt>,
-        block_name: BasicBlock,
-        path: &Vec<BasicBlock>,
-        conds: &Vec<(String, String)>,
-        branches: &HashSet<(BasicBlock, BasicBlock)>,
-        loop_paths: &Vec<Vec<BasicBlock>>,
-
+        dfs_cxt: &DFSCxt,
         targets: &SwitchTargets,
         match_cond: &MatchCond,
         arm_source: &Option<Vec<SourceInfo>>,
     ) {
+        let succ_size = targets.iter().len() + 1;
+        if succ_size > 2 {
+            warn!("{:?} has more than 2 successors", dfs_cxt.block);
+        }
+        let DFSCxt {
+            block,
+            path,
+            conds,
+            branches,
+            loop_paths,
+        } = dfs_cxt;
+        let block_name = *block;
         if let Some(pat_sources) = arm_source {
             // Span of Terminator points to a arm pattern
             info!("Span of Terminator points to a arm pattern");
             assert_eq!(pat_sources.len(), 1);
             let arm = match_cond.arms.get(&pat_sources[0]).unwrap();
             // common branches
-            let succ_size = targets.iter().len() + 1;
-            if succ_size > 2 {
-                error!("More than 2 successors");
-            }
             for (value, target) in targets.iter() {
                 let mut branches = branches.clone();
                 if branches.insert((block_name, target)) {
@@ -1435,34 +1591,169 @@ impl FnBlocks<'_> {
         } else {
             // Span of Terminator does NOT point to a arm pattern, just "match XXX"
             info!("Span of Terminator does NOT point to a arm pattern");
-            // TODO:
+            // common branches
+            for (value, target) in targets.iter() {
+                let mut branches = branches.clone();
+                if branches.insert((block_name, target)) {
+                    // new branch
+                    let mut path = path.clone();
+                    let mut conds = conds.clone();
+
+                    for (arm_source, arm) in &match_cond.arms {
+                        match &arm.pat.kind {
+                            PattKind::Other(lit) => {
+                                if let Some(lit) = lit {
+                                    if value == *lit {
+                                        conds.push((
+                                            format!(
+                                                "{} matches {}",
+                                                match_cond.match_str, arm.pat.pat_str
+                                            ),
+                                            "true".to_string(),
+                                        ));
+                                        break;
+                                    }
+                                } else {
+                                    if value == 0 {
+                                        warn!(
+                                            "Branch {:?} -> {:?}, Arm of {:?}",
+                                            block_name, target, arm_source
+                                        );
+                                        conds.push((
+                                            format!(
+                                                "{} matches {}",
+                                                match_cond.match_str, arm.pat.pat_str
+                                            ),
+                                            "false".to_string(),
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                            PattKind::Wild => {}
+                            _ => {
+                                panic!(
+                                    "Invalid pattern kind for Enum. Check Arm of {:?}",
+                                    arm_source
+                                );
+                            }
+                        }
+                    }
+                    // Check if the target block is in the arm body
+                    for (_, arm) in &match_cond.arms {
+                        if self.block_in_arm(&self.blocks[target.index()], arm) {
+                            conds.push((
+                                format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
+                                "true".to_string(),
+                            ));
+                            break;
+                        }
+                    }
+
+                    path.push(target);
+                    stack.push(DFSCxt::new(
+                        target,
+                        path,
+                        conds,
+                        branches,
+                        loop_paths.clone(),
+                    ));
+                }
+            }
+            // otherwise branch
+            let cmp_value = if targets.iter().len() == 1 {
+                Some(targets.iter().next().unwrap().0)
+            } else {
+                None
+            };
+            let mut branches = branches.clone();
+            if !matches!(
+                self.blocks[targets.otherwise().index()].terminator.kind,
+                TerminatorKind::Unreachable
+            ) && branches.insert((block_name, targets.otherwise()))
+            {
+                // new branch
+                let mut path = path.clone();
+                let mut conds = conds.clone();
+
+                for (arm_source, arm) in &match_cond.arms {
+                    match &arm.pat.kind {
+                        PattKind::Other(lit) => {
+                            if let Some(lit) = lit {
+                                if let Some(cmp_value) = cmp_value {
+                                    if cmp_value == *lit {
+                                        conds.push((
+                                            format!(
+                                                "{} matches {}",
+                                                match_cond.match_str, arm.pat.pat_str
+                                            ),
+                                            "false".to_string(),
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        PattKind::Wild => {}
+                        _ => {
+                            panic!(
+                                "Invalid pattern kind for Enum. Check Arm of {:?}",
+                                arm_source
+                            );
+                        }
+                    }
+                }
+                // Check if the target block is in the arm body
+                for (_, arm) in &match_cond.arms {
+                    if self.block_in_arm(&self.blocks[targets.otherwise().index()], arm) {
+                        conds.push((
+                            format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
+                            "true".to_string(),
+                        ));
+                        break;
+                    }
+                }
+
+                path.push(targets.otherwise());
+                stack.push(DFSCxt::new(
+                    targets.otherwise(),
+                    path,
+                    conds,
+                    branches,
+                    loop_paths.clone(),
+                ));
+            }
         }
     }
 
     fn handle_switchint_alt(
         &self,
         stack: &mut Vec<DFSCxt>,
-        block_name: BasicBlock,
-        path: &Vec<BasicBlock>,
-        conds: &Vec<(String, String)>,
-        branches: &HashSet<(BasicBlock, BasicBlock)>,
-        loop_paths: &Vec<Vec<BasicBlock>>,
-
+        dfs_cxt: &DFSCxt,
         ternimator_span: Span,
         discr: &Operand,
         targets: &SwitchTargets,
     ) {
+        let DFSCxt {
+            block,
+            path,
+            conds,
+            branches,
+            loop_paths,
+        } = dfs_cxt;
+        let block_name = *block;
         let cond_source = self.get_source_info(ternimator_span);
         if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source) {
-            let mut conds = conds.clone();
-            let mut path = path.clone();
-            let mut branches = branches.clone();
             match condition {
                 Condition::Bool(bool_cond) => match bool_cond {
                     BoolCond::Binary(bin_cond) => {
                         // common branches
                         for (value, target) in targets.iter() {
+                            let mut branches = branches.clone();
                             if branches.insert((block_name, target)) {
+                                let mut path = path.clone();
+                                let mut conds = conds.clone();
+
                                 if bin_cond.eq_with_int() {
                                     conds.push((bin_cond.get_cond_str(), "true".to_string()));
                                 } else if bin_cond.ne_with_int() {
@@ -1474,14 +1765,27 @@ impl FnBlocks<'_> {
                                         conds.push((bin_cond.get_cond_str(), "true".to_string()));
                                     }
                                 }
+
+                                path.push(target);
+                                stack.push(DFSCxt::new(
+                                    target,
+                                    path,
+                                    conds,
+                                    branches,
+                                    loop_paths.clone(),
+                                ));
                             }
                         }
                         // otherwise branch
+                        let mut branches = branches.clone();
                         if !matches!(
                             self.blocks[targets.otherwise().index()].terminator.kind,
                             TerminatorKind::Unreachable
                         ) && branches.insert((block_name, targets.otherwise()))
                         {
+                            let mut path = path.clone();
+                            let mut conds = conds.clone();
+
                             if bin_cond.eq_with_int() {
                                 conds.push((bin_cond.get_cond_str(), "false".to_string()));
                             } else if bin_cond.ne_with_int() {
@@ -1489,349 +1793,133 @@ impl FnBlocks<'_> {
                             } else {
                                 conds.push((bin_cond.get_cond_str(), "true".to_string()));
                             }
+
+                            path.push(targets.otherwise());
+                            stack.push(DFSCxt::new(
+                                targets.otherwise(),
+                                path,
+                                conds,
+                                branches,
+                                loop_paths.clone(),
+                            ));
                         }
                     }
                     BoolCond::Other(cond_str) => {
                         // common branches
                         for (value, target) in targets.iter() {
+                            let mut branches = branches.clone();
                             if branches.insert((block_name, target)) {
+                                let mut path = path.clone();
+                                let mut conds = conds.clone();
+
                                 if value == 0 {
                                     conds.push((cond_str.clone(), "false".to_string()));
                                 } else {
                                     conds.push((cond_str.clone(), "true".to_string()));
                                 }
+
+                                path.push(target);
+                                stack.push(DFSCxt::new(
+                                    target,
+                                    path,
+                                    conds,
+                                    branches,
+                                    loop_paths.clone(),
+                                ));
                             }
                         }
                         // otherwise branch
+                        let mut branches = branches.clone();
                         if !matches!(
                             self.blocks[targets.otherwise().index()].terminator.kind,
                             TerminatorKind::Unreachable
                         ) && branches.insert((block_name, targets.otherwise()))
                         {
+                            let mut path = path.clone();
+                            let mut conds = conds.clone();
+
                             conds.push((cond_str, "true".to_string()));
+
+                            path.push(targets.otherwise());
+                            stack.push(DFSCxt::new(
+                                targets.otherwise(),
+                                path,
+                                conds,
+                                branches,
+                                loop_paths.clone(),
+                            ));
                         }
                     }
                 },
                 Condition::For(for_cond) => {
                     // common branches
                     for (value, target) in targets.iter() {
+                        let mut branches = branches.clone();
                         if branches.insert((block_name, target)) {
+                            let mut path = path.clone();
+                            let mut conds = conds.clone();
+
                             let value_str = match value {
                                 0 => "false",
                                 1 => "true",
                                 _ => panic!("Invalid value"),
                             };
                             conds.push((for_cond.get_cond_str(), value_str.to_string()));
+
+                            path.push(target);
+                            stack.push(DFSCxt::new(
+                                target,
+                                path,
+                                conds,
+                                branches,
+                                loop_paths.clone(),
+                            ));
                         }
                     }
                     // otherwise branch
+                    let mut branches = branches.clone();
                     if !matches!(
                         self.blocks[targets.otherwise().index()].terminator.kind,
                         TerminatorKind::Unreachable
                     ) && branches.insert((block_name, targets.otherwise()))
                     {
+                        let mut path = path.clone();
+                        let mut conds = conds.clone();
+
                         conds.push((for_cond.get_cond_str(), "otherwise".to_string()));
+
+                        path.push(targets.otherwise());
+                        stack.push(DFSCxt::new(
+                            targets.otherwise(),
+                            path,
+                            conds,
+                            branches,
+                            loop_paths.clone(),
+                        ));
                     }
                 }
-                Condition::Match(match_cond) => {
-                    let cmp_value = if targets.iter().len() == 1 {
-                        Some(targets.iter().next().unwrap().0)
-                    } else {
-                        None
-                    };
-                    match &match_cond.match_kind {
-                        MatchKind::Enum(_) => {
-                            self.handle_enum_match(
-                                stack,
-                                block_name,
-                                &path,
-                                &conds,
-                                &branches,
-                                loop_paths,
-                                targets,
-                                &match_cond,
-                                &arm_source,
-                            );
-                        }
-                        MatchKind::StructLike(_) => {
-                            self.handle_structlike_match(
-                                stack,
-                                block_name,
-                                &path,
-                                &conds,
-                                &branches,
-                                loop_paths,
-                                &cond_source,
-                                discr,
-                                targets,
-                                &match_cond,
-                                &arm_source,
-                            );
-                        }
-                        MatchKind::Other => {
-                            self.handle_other_match(
-                                stack,
-                                block_name,
-                                &mut path,
-                                &mut conds,
-                                &mut branches,
-                                loop_paths,
-                                targets,
-                                &match_cond,
-                                &arm_source,
-                            );
-                        }
+                Condition::Match(match_cond) => match &match_cond.match_kind {
+                    MatchKind::Enum(_) => {
+                        self.handle_enum_match(stack, dfs_cxt, targets, &match_cond, &arm_source);
                     }
-                }
+                    MatchKind::StructLike(_) => {
+                        self.handle_structlike_match(
+                            stack,
+                            dfs_cxt,
+                            &cond_source,
+                            discr,
+                            targets,
+                            &match_cond,
+                            &arm_source,
+                        );
+                    }
+                    MatchKind::Other => {
+                        self.handle_other_match(stack, dfs_cxt, targets, &match_cond, &arm_source);
+                    }
+                },
             }
         } else {
             panic!("No matched condition found for {:?}", cond_source);
-        }
-
-        //
-        let cmp_value = if targets.iter().len() == 1 {
-            Some(targets.iter().next().unwrap().0)
-        } else {
-            None
-        };
-        for (value, target) in targets.iter() {
-            let mut path = path.clone();
-            let mut branches = branches.clone();
-            if branches.insert((block_name, target)) {
-                // new branch
-                if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source) {
-                    let mut conds = conds.clone();
-                    match condition {
-                        Condition::Match(match_cond) => {
-                            let mut found = false;
-                            if let Some(pat_sources) = arm_source {}
-                            if !found {
-                                println!("!found");
-                                for (_, arm) in &match_cond.arms {
-                                    match &arm.pat.kind {
-                                        PattKind::Other(lit) => {
-                                            if let Some(lit) = lit {
-                                                if value == *lit {
-                                                    conds.push((
-                                                        format!(
-                                                            "{} matches {}",
-                                                            match_cond.match_str, arm.pat.pat_str
-                                                        ),
-                                                        "true".to_string(),
-                                                    ));
-                                                    break;
-                                                }
-                                            } else {
-                                                if value == 0 {
-                                                    conds.push((
-                                                        format!(
-                                                            "{} matches {}",
-                                                            match_cond.match_str, arm.pat.pat_str
-                                                        ),
-                                                        "false".to_string(),
-                                                    ));
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        PattKind::Enum(index) => {
-                                            if value == *index as u128 {
-                                                conds.push((
-                                                    format!(
-                                                        "{} matches {}",
-                                                        match_cond.match_str, arm.pat.pat_str
-                                                    ),
-                                                    "true".to_string(),
-                                                ));
-                                                break;
-                                            }
-                                        }
-                                        PattKind::StructLike(field_map) => {
-                                            match discr {
-                                                Operand::Copy(place) | Operand::Move(place) => {
-                                                    // println!(
-                                                    //     "place: {:?} {:?}",
-                                                    //     place, place.projection
-                                                    // );
-                                                    for proj in place.projection.iter() {
-                                                        if let rustc_middle::mir::ProjectionElem::Field(
-                                                                                idx,
-                                                                                _,
-                                                                            ) = proj
-                                                                            {
-                                                                                if let Some((lit, source)) =
-                                                                                    field_map.get(&idx.index())
-                                                                                {
-                                                                                    if let Some(lit) = lit {
-                                                                                        if value == *lit {
-                                                                                            conds.push((
-                                                                                                format!(
-                                                                                                    "{}.{} matches {}",
-                                                                                                    match_cond.match_str,
-                                                                                                    match_cond.match_kind.get_field_name(idx.index()),
-                                                                                                    source.get_string()
-                                                                                                ),
-                                                                                                "true".to_string(),
-                                                                                            ));
-                                                                                            break;
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            for (_, arm) in &match_cond.arms {
-                                if self.block_in_arm(&self.blocks[target.index()], arm) {
-                                    conds.push((
-                                        format!(
-                                            "{} matches {}",
-                                            match_cond.match_str, arm.pat.pat_str
-                                        ),
-                                        "true".to_string(),
-                                    ));
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    path.push(target);
-                    stack.push(DFSCxt::new(
-                        target,
-                        path,
-                        conds,
-                        branches,
-                        loop_paths.clone(),
-                    ));
-                } else {
-                    panic!("No matched condition found for {:?}", cond_source);
-                }
-            }
-        }
-        let mut path = path.clone();
-        let mut branches = branches.clone();
-        // otherwise branch
-        if !matches!(
-            self.blocks[targets.otherwise().index()].terminator.kind,
-            TerminatorKind::Unreachable
-        ) {
-            if branches.insert((block_name, targets.otherwise())) {
-                // new branch
-                if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source) {
-                    let mut conds = conds.clone();
-                    match condition {
-                        Condition::Match(match_cond) => {
-                            let mut found = false;
-                            if let Some(pat_sources) = arm_source {}
-                            if !found {
-                                println!("otherwise !found");
-                                for (_, arm) in &match_cond.arms {
-                                    match &arm.pat.kind {
-                                        PattKind::Other(lit) => {
-                                            if let Some(lit) = lit {
-                                                if let Some(cmp_value) = cmp_value {
-                                                    if cmp_value == *lit {
-                                                        conds.push((
-                                                            format!(
-                                                                "{} matches {}",
-                                                                match_cond.match_str,
-                                                                arm.pat.pat_str
-                                                            ),
-                                                            "false".to_string(),
-                                                        ));
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        PattKind::Enum(_) => {
-                                            conds.push((
-                                                format!(
-                                                    "{} matches {}",
-                                                    match_cond.match_str, arm.pat.pat_str
-                                                ),
-                                                "false".to_string(),
-                                            ));
-                                            // break;
-                                        }
-                                        PattKind::StructLike(field_map) => {
-                                            match discr {
-                                                Operand::Copy(place) | Operand::Move(place) => {
-                                                    // println!(
-                                                    //     "place: {:?} {:?}",
-                                                    //     place, place.projection
-                                                    // );
-                                                    for proj in place.projection.iter() {
-                                                        if let rustc_middle::mir::ProjectionElem::Field(
-                                                                                idx,
-                                                                                _,
-                                                                            ) = proj
-                                                                        {
-                                                                            if let Some((lit, source)) =
-                                                                                field_map.get(&idx.index())
-                                                                            {
-                                                                                if let Some(lit) = lit {
-                                                                                    if let Some(cmp_value) = cmp_value {
-                                                                                        if cmp_value == *lit {
-                                                                                            conds.push((
-                                                                                                format!(
-                                                                                                    "{}.{} matches {}",
-                                                                                                    match_cond.match_str,
-                                                                                                    match_cond.match_kind.get_field_name(idx.index()),
-                                                                                                    source.get_string()
-                                                                                                ),
-                                                                                                "false".to_string(),
-                                                                                            ));
-                                                                                            break;
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            for (_, arm) in &match_cond.arms {
-                                if self.block_in_arm(&self.blocks[targets.otherwise().index()], arm)
-                                {
-                                    conds.push((
-                                        format!(
-                                            "{} matches {}",
-                                            match_cond.match_str, arm.pat.pat_str
-                                        ),
-                                        "true".to_string(),
-                                    ));
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    path.push(targets.otherwise());
-                    stack.push(DFSCxt::new(
-                        targets.otherwise(),
-                        path,
-                        conds,
-                        branches,
-                        loop_paths.clone(),
-                    ));
-                } else {
-                    panic!("No matched condition found");
-                }
-            }
         }
     }
 
@@ -1847,14 +1935,14 @@ impl FnBlocks<'_> {
         stack.push(dfs_cxt);
         let mut cond_chains: Vec<(Vec<(String, String)>, Vec<BasicBlock>)> = Vec::new();
         while !stack.is_empty() {
-            let dfs_cxt = stack.pop().unwrap();
+            let mut dfs_cxt = stack.pop().unwrap();
             let DFSCxt {
                 block,
                 path,
                 conds,
                 branches,
-                mut loop_paths,
-            } = dfs_cxt;
+                loop_paths,
+            } = &mut dfs_cxt;
             let block_index = block.index();
 
             let block = &self.blocks[block_index];
@@ -1862,7 +1950,7 @@ impl FnBlocks<'_> {
             // Check if a loop path is duplicated
             let mut dup_loop = false;
             let mut path2 = path.clone();
-            for loop_path in &loop_paths {
+            for loop_path in loop_paths.iter() {
                 let count = count_subsequence(&path2, loop_path);
                 if count > 1 {
                     dup_loop = true;
@@ -1888,27 +1976,33 @@ impl FnBlocks<'_> {
                 // continue;
                 // println!("Final Conds: {:?}", conds);
                 // println!("Final Path: {:?}", path);
-                cond_chains.push((conds, path));
+                cond_chains.push((conds.clone(), path.clone()));
             } else {
                 let ter_source = block.terminator.source_info;
                 match &block.terminator.kind {
                     TerminatorKind::SwitchInt { discr, targets } => {
-                        self.handle_switchint(
+                        // self.handle_switchint(
+                        //     discr,
+                        //     targets,
+                        //     block.block_name,
+                        //     ter_source.span,
+                        //     &path,
+                        //     &branches,
+                        //     &conds,
+                        //     &mut stack,
+                        //     &loop_paths,
+                        // );
+                        self.handle_switchint_alt(
+                            &mut stack,
+                            &dfs_cxt,
+                            ter_source.span,
                             discr,
                             targets,
-                            block.block_name,
-                            ter_source.span,
-                            &path,
-                            &branches,
-                            &conds,
-                            &mut stack,
-                            &loop_paths,
                         );
                     }
                     TerminatorKind::FalseEdge { real_target, .. } => {
                         let cond_source = self.get_source_info(ter_source.span);
                         let mut path = path.clone();
-                        // let branches = branches.clone();
                         let mut conds = conds.clone();
                         if let Some((condition, arm_sources)) = self.get_matched_cond(&cond_source)
                         {
@@ -1940,7 +2034,7 @@ impl FnBlocks<'_> {
                             *real_target,
                             path,
                             conds,
-                            branches,
+                            branches.clone(),
                             loop_paths.clone(),
                         ));
                     }
@@ -1950,16 +2044,17 @@ impl FnBlocks<'_> {
                         stack.push(DFSCxt::new(
                             block.suc_blocks[0],
                             path,
-                            conds,
-                            branches,
-                            loop_paths,
+                            conds.clone(),
+                            branches.clone(),
+                            loop_paths.clone(),
                         ));
                     }
                 }
             }
         }
+
         let mut chain_id = 0;
-        let mut chains_str = String::new();
+        let mut chains_str = String::from("\n");
         for (conds, path) in &cond_chains {
             chains_str += &format!("CondChain {}\n", chain_id);
             let mut cond_iter = 0;
@@ -2023,7 +2118,7 @@ impl MirCheckerCallbacks {
     fn run_analysis<'tcx, 'compiler>(&mut self, tcx: TyCtxt<'tcx>) {
         let time_offset = UtcOffset::from_hms(8, 0, 0).unwrap(); // Set time zone to UTC+8
         let log_config = ConfigBuilder::new()
-            .set_location_level(LevelFilter::Info)
+            .set_location_level(LevelFilter::Error)
             .set_time_offset(time_offset)
             .build();
         TermLogger::init(
@@ -2033,7 +2128,6 @@ impl MirCheckerCallbacks {
             ColorChoice::Auto,
         )
         .unwrap();
-        info!("Start analysis");
         let mut ret: Vec<FnBlocks> = vec![];
         let hir_krate = tcx.hir();
         for id in hir_krate.items() {
@@ -2108,6 +2202,7 @@ impl MirCheckerCallbacks {
             }
         }
         for mut block in ret {
+            info!("Start analysis for {:?}", block.fn_name);
             block.mir_out();
             block.dump_cfg_to_dot();
             block.iterative_dfs();
