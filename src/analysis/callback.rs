@@ -834,69 +834,82 @@ impl FnBlocks<'_> {
     ) {
         if let Some(pat_sources) = arm_source {
             // Span of Terminator points to a arm pattern
-            error!("Span of Terminator for Enum points to an arm pattern, this is NOT common.");
+            error!("Span of Terminator for Enum points to an arm pattern, this is NOT common. Check {:?}", block_name);
             assert_eq!(pat_sources.len(), 1);
             let arm = match_cond.arms.get(&pat_sources[0]).unwrap();
-            match arm.pat.kind {
-                PattKind::Enum(index) => {
-                    // common branches
-                    for (value, target) in targets.iter() {
-                        let mut path = path.clone();
-                        let mut conds = conds.clone();
-                        let mut branches = branches.clone();
-                        if branches.insert((block_name, target)) {
-                            // new branch
+            // common branches
+            for (value, target) in targets.iter() {
+                let mut branches = branches.clone();
+                if branches.insert((block_name, target)) {
+                    // new branch
+                    let mut path = path.clone();
+                    let mut conds = conds.clone();
+
+                    match arm.pat.kind {
+                        PattKind::Enum(index) => {
                             if value == index as u128 {
                                 conds.push((
                                     format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                     "true".to_string(),
                                 ));
                             }
-                            path.push(target);
-                            stack.push(DFSCxt::new(
-                                target,
-                                path,
-                                conds,
-                                branches,
-                                loop_paths.clone(),
-                            ));
+                        }
+                        PattKind::Wild => {
+                            error!("Span of Terminator points to _ pattern. Check {:?}", block_name);
+                        }
+                        _ => {
+                            panic!("Invalid pattern kind for Enum. Check Arm of {:?}", pat_sources[0]);
                         }
                     }
-                    // otherwise branch
-                    let mut path = path.clone();
-                    let mut conds = conds.clone();
-                    let mut branches = branches.clone();
-                    if !matches!(
-                        self.blocks[targets.otherwise().index()].terminator.kind,
-                        TerminatorKind::Unreachable
-                    ) && branches.insert((block_name, targets.otherwise()))
-                    {
-                        // new branch
+
+                    path.push(target);
+                    stack.push(DFSCxt::new(
+                        target,
+                        path,
+                        conds,
+                        branches,
+                        loop_paths.clone(),
+                    ));
+                }
+            }
+            // otherwise branch
+            let mut branches = branches.clone();
+            if !matches!(
+                self.blocks[targets.otherwise().index()].terminator.kind,
+                TerminatorKind::Unreachable
+            ) && branches.insert((block_name, targets.otherwise()))
+            {
+                // new branch
+                let mut path = path.clone();
+                let mut conds = conds.clone();
+
+                match arm.pat.kind {
+                    PattKind::Enum(_) => {
                         conds.push((
                             format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                             "false".to_string(),
                         ));
-                        path.push(targets.otherwise());
-                        stack.push(DFSCxt::new(
-                            targets.otherwise(),
-                            path,
-                            conds,
-                            branches,
-                            loop_paths.clone(),
-                        ));
+                    }
+                    PattKind::Wild => {
+                        error!("Span of Terminator points to _ pattern. Check {:?}", block_name);
+                    }
+                    _ => {
+                        panic!("Invalid pattern kind for Enum. Check Arm of {:?}", pat_sources[0]);
                     }
                 }
-                PattKind::Wild => {
-                    error!("Span of Terminator points to _ pattern");
-                }
-                _ => {
-                    panic!("Invalid pattern kind for Enum");
-                }
+
+                path.push(targets.otherwise());
+                stack.push(DFSCxt::new(
+                    targets.otherwise(),
+                    path,
+                    conds,
+                    branches,
+                    loop_paths.clone(),
+                ));
             }
         } else {
             // Span of Terminator does NOT point to a arm pattern, just "match XXX"
             info!("Span of Terminator does NOT point to a arm pattern");
-            // TODO:
         }
     }
 
@@ -904,9 +917,9 @@ impl FnBlocks<'_> {
         &self,
         stack: &mut Vec<DFSCxt>,
         block_name: BasicBlock,
-        path: &mut Vec<BasicBlock>,
-        conds: &mut Vec<(String, String)>,
-        branches: &mut HashSet<(BasicBlock, BasicBlock)>,
+        path: &Vec<BasicBlock>,
+        conds: &Vec<(String, String)>,
+        branches: &HashSet<(BasicBlock, BasicBlock)>,
         loop_paths: &Vec<Vec<BasicBlock>>,
 
         cond_source: &SourceInfo,
@@ -920,17 +933,22 @@ impl FnBlocks<'_> {
             info!("Span of Terminator points to a arm pattern");
             assert_eq!(pat_sources.len(), 1);
             let arm = match_cond.arms.get(&pat_sources[0]).unwrap();
-            match &arm.pat.kind {
-                PattKind::StructLike(field_map) => {
-                    // common branches
-                    let succ_size = targets.iter().len() + 1;
-                    assert!(succ_size <= 2);
-                    for (value, target) in targets.iter() {
-                        if branches.insert((block_name, target)) {
-                            // new branch
+            // common branches
+            let succ_size = targets.iter().len() + 1;
+            assert!(succ_size <= 2);
+            for (value, target) in targets.iter() {
+                let mut branches = branches.clone();
+                if branches.insert((block_name, target)) {
+                    // new branch
+                    let mut path = path.clone();
+                    let mut conds = conds.clone();
+
+                    match &arm.pat.kind {
+                        PattKind::StructLike(field_map) => {
                             let mut found = true;
                             for (field_index, (lit, field_source)) in field_map {
                                 if cond_source == field_source {
+                                    info!("Span of Terminator points to field pattern");
                                     if let Some(lit) = lit {
                                         if value != *lit {
                                             error!("Value not equal to literal");
@@ -1019,19 +1037,42 @@ impl FnBlocks<'_> {
                                     "true".to_string(),
                                 ));
                             }
-                            // TODO: push path and stack
+                        }
+                        PattKind::Wild => {
+                            error!("Span of Terminator points to _ pattern");
+                        }
+                        _ => {
+                            panic!("Invalid pattern kind for Enum");
                         }
                     }
-                    // otherwise branch
-                    if !matches!(
-                        self.blocks[targets.otherwise().index()].terminator.kind,
-                        TerminatorKind::Unreachable
-                    ) && branches.insert((block_name, targets.otherwise()))
-                    {
-                        // new branch
+
+                    path.push(target);
+                    stack.push(DFSCxt::new(
+                        target,
+                        path,
+                        conds,
+                        branches,
+                        loop_paths.clone(),
+                    ));
+                }
+            }
+            // otherwise branch
+            let mut branches = branches.clone();
+            if !matches!(
+                self.blocks[targets.otherwise().index()].terminator.kind,
+                TerminatorKind::Unreachable
+            ) && branches.insert((block_name, targets.otherwise()))
+            {
+                // new branch
+                let mut path = path.clone();
+                let mut conds = conds.clone();
+
+                match &arm.pat.kind {
+                    PattKind::StructLike(field_map) => {
                         let mut found = true;
                         for (field_index, (lit, field_source)) in field_map {
                             if cond_source == field_source {
+                                info!("Span of Terminator points to field pattern");
                                 if let Some(_) = lit {
                                     conds.push((
                                         format!(
@@ -1107,15 +1148,23 @@ impl FnBlocks<'_> {
                                 "true".to_string(),
                             ));
                         }
-                        // TODO: push path and stack
+                    }
+                    PattKind::Wild => {
+                        error!("Span of Terminator points to _ pattern");
+                    }
+                    _ => {
+                        panic!("Invalid pattern kind for Enum");
                     }
                 }
-                PattKind::Wild => {
-                    error!("Span of Terminator points to _ pattern");
-                }
-                _ => {
-                    panic!("Invalid pattern kind for Enum");
-                }
+
+                path.push(targets.otherwise());
+                stack.push(DFSCxt::new(
+                    targets.otherwise(),
+                    path,
+                    conds,
+                    branches,
+                    loop_paths.clone(),
+                ));
             }
         } else {
             // Span of Terminator does NOT point to a arm pattern, just "match XXX"
@@ -1128,9 +1177,9 @@ impl FnBlocks<'_> {
         &self,
         stack: &mut Vec<DFSCxt>,
         block_name: BasicBlock,
-        path: &mut Vec<BasicBlock>,
-        conds: &mut Vec<(String, String)>,
-        branches: &mut HashSet<(BasicBlock, BasicBlock)>,
+        path: &Vec<BasicBlock>,
+        conds: &Vec<(String, String)>,
+        branches: &HashSet<(BasicBlock, BasicBlock)>,
         loop_paths: &Vec<Vec<BasicBlock>>,
 
         targets: &SwitchTargets,
@@ -1142,12 +1191,20 @@ impl FnBlocks<'_> {
             info!("Span of Terminator points to a arm pattern");
             assert_eq!(pat_sources.len(), 1);
             let arm = match_cond.arms.get(&pat_sources[0]).unwrap();
-            match arm.pat.kind {
-                PattKind::Other(lit) => {
-                    // common branches
-                    for (value, target) in targets.iter() {
-                        if branches.insert((block_name, target)) {
-                            // new branch
+            // common branches
+            let succ_size = targets.iter().len() + 1;
+            if succ_size > 2 {
+                error!("More than 2 successors");
+            }
+            for (value, target) in targets.iter() {
+                let mut branches = branches.clone();
+                if branches.insert((block_name, target)) {
+                    // new branch
+                    let mut path = path.clone();
+                    let mut conds = conds.clone();
+
+                    match arm.pat.kind {
+                        PattKind::Other(lit) => {
                             if let Some(lit) = lit {
                                 if value != lit {
                                     error!("Value not equal to literal");
@@ -1165,22 +1222,45 @@ impl FnBlocks<'_> {
                                     "false".to_string(),
                                 ));
                             }
+                            // Check if the target block is in the arm body
                             if self.block_in_arm(&self.blocks[target.index()], arm) {
                                 conds.push((
                                     format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                     "true".to_string(),
                                 ));
                             }
-                            // TODO: push path and stack
+                        }
+                        PattKind::Wild => {
+                            error!("Span of Terminator points to _ pattern");
+                        }
+                        _ => {
+                            panic!("Invalid pattern kind for Enum");
                         }
                     }
-                    // otherwise branch
-                    if !matches!(
-                        self.blocks[targets.otherwise().index()].terminator.kind,
-                        TerminatorKind::Unreachable
-                    ) && branches.insert((block_name, targets.otherwise()))
-                    {
-                        // new branch
+
+                    path.push(target);
+                    stack.push(DFSCxt::new(
+                        target,
+                        path,
+                        conds,
+                        branches,
+                        loop_paths.clone(),
+                    ));
+                }
+            }
+            // otherwise branch
+            let mut branches = branches.clone();
+            if !matches!(
+                self.blocks[targets.otherwise().index()].terminator.kind,
+                TerminatorKind::Unreachable
+            ) && branches.insert((block_name, targets.otherwise()))
+            {
+                // new branch
+                let mut path = path.clone();
+                let mut conds = conds.clone();
+
+                match arm.pat.kind {
+                    PattKind::Other(lit) => {
                         if let Some(_) = lit {
                             conds.push((
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
@@ -1192,21 +1272,30 @@ impl FnBlocks<'_> {
                                 "true".to_string(),
                             ));
                         }
+                        // Check if the target block is in the arm body
                         if self.block_in_arm(&self.blocks[targets.otherwise().index()], arm) {
                             conds.push((
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                 "true".to_string(),
                             ));
                         }
-                        // TODO: push path and stack
+                    }
+                    PattKind::Wild => {
+                        error!("Span of Terminator points to _ pattern");
+                    }
+                    _ => {
+                        panic!("Invalid pattern kind for Enum");
                     }
                 }
-                PattKind::Wild => {
-                    error!("Span of Terminator points to _ pattern");
-                }
-                _ => {
-                    panic!("Invalid pattern kind for Enum");
-                }
+
+                path.push(targets.otherwise());
+                stack.push(DFSCxt::new(
+                    targets.otherwise(),
+                    path,
+                    conds,
+                    branches,
+                    loop_paths.clone(),
+                ));
             }
         } else {
             // Span of Terminator does NOT point to a arm pattern, just "match XXX"
@@ -1333,9 +1422,9 @@ impl FnBlocks<'_> {
                             self.handle_structlike_match(
                                 stack,
                                 block_name,
-                                &mut path,
-                                &mut conds,
-                                &mut branches,
+                                &path,
+                                &conds,
+                                &branches,
                                 loop_paths,
                                 &cond_source,
                                 discr,

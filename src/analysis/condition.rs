@@ -108,7 +108,7 @@ impl ForCond {
 #[derive(Clone, Debug)]
 pub enum PattKind {
     Enum(usize),
-    StructLike(HashMap<usize, (Option<u128>, SourceInfo)>),   // TODO: add SourceInfo of the pattern
+    StructLike(HashMap<usize, (Option<u128>, SourceInfo)>),
     Other(Option<u128>),
     Wild,
 }
