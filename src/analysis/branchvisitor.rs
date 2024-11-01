@@ -4,15 +4,17 @@ use super::condition::{
 use super::sourceinfo::SourceInfo;
 use regex::Regex;
 use rustc_ast::BinOpKind;
-use rustc_hir::intravisit::{self, Visitor as HIRVisitor};
+use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::ty::{self, TyCtxt, TyKind};
 use rustc_span::source_map::Spanned;
+use serde_json;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 
 pub struct BranchVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
+    fn_name: String,
     fn_source: SourceInfo,
     span_re: Regex,
     typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
@@ -22,12 +24,14 @@ pub struct BranchVisitor<'tcx> {
 impl<'tcx> BranchVisitor<'tcx> {
     pub fn new(
         tcx: TyCtxt<'tcx>,
+        fn_name: String,
         fn_source: SourceInfo,
         span_re: Regex,
         typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
     ) -> Self {
         Self {
             tcx,
+            fn_name,
             fn_source,
             span_re,
             typeck_res,
@@ -36,12 +40,12 @@ impl<'tcx> BranchVisitor<'tcx> {
     }
 
     pub fn output_map(&self) {
-        let map_str = &format!("{:#?}\n", self.source_cond_map);
-        let dir_path = "./cond_map";
-        let file_path = format!("{}/map.txt", dir_path);
+        let dir_path = format!("./rbrinfo/{}", self.fn_name);
+        let file_path = format!("{}/cond_map.json", dir_path);
         fs::create_dir_all(dir_path).unwrap();
+        let json = serde_json::to_string_pretty(&self.source_cond_map).unwrap();
         let mut file = File::create(file_path).unwrap();
-        file.write_all(map_str.as_bytes()).unwrap();
+        file.write_all(json.as_bytes()).unwrap();
     }
 
     pub fn move_map(self) -> HashMap<SourceInfo, Condition> {
@@ -120,6 +124,9 @@ impl<'tcx> BranchVisitor<'tcx> {
         let expr_str = expr_source.get_string();
         let mut map = HashMap::new();
         match &expr.kind {
+            rustc_hir::ExprKind::DropTemps(temp_expr) => {
+                map.extend(self.handle_expr(temp_expr));
+            }
             rustc_hir::ExprKind::Binary(op, lexpr, rexpr) => {
                 map.extend(self.handle_binary(op, expr_source, lexpr, rexpr));
             }
@@ -137,8 +144,34 @@ impl<'tcx> BranchVisitor<'tcx> {
                 let pat_source = SourceInfo::from_span(let_expr.pat.span, &self.span_re);
                 map.insert(pat_source, cond);
             }
-            rustc_hir::ExprKind::DropTemps(temp_expr) => {
-                map.extend(self.handle_expr(temp_expr));
+            rustc_hir::ExprKind::Lit(_) => {
+                // FIXME: handle literals which means determinated conditions
+                let cond = Condition::Bool(BoolCond::Other(expr_str));
+                map.insert(expr_source, cond);
+            }
+            rustc_hir::ExprKind::MethodCall(_, _, _, _) => {
+                let cond = Condition::Bool(BoolCond::Other(expr_str));
+                map.insert(expr_source, cond);
+            }
+            rustc_hir::ExprKind::Call(_, _) => {
+                let cond = Condition::Bool(BoolCond::Other(expr_str));
+                map.insert(expr_source, cond);
+            }
+            rustc_hir::ExprKind::Path(_) => {
+                let cond = Condition::Bool(BoolCond::Other(expr_str));
+                map.insert(expr_source, cond);
+            }
+            rustc_hir::ExprKind::Block(_, _) => {
+                let cond = Condition::Bool(BoolCond::Other(expr_str));
+                map.insert(expr_source, cond);
+            }
+            rustc_hir::ExprKind::Match(_, _, _) => {
+                let cond = Condition::Bool(BoolCond::Other(expr_str));
+                map.insert(expr_source, cond);
+            }
+            rustc_hir::ExprKind::Field(_, _) => {
+                let cond = Condition::Bool(BoolCond::Other(expr_str));
+                map.insert(expr_source, cond);
             }
             _ => {
                 panic!("Unsupported expression kind: {:?}", expr.kind);
@@ -232,6 +265,13 @@ impl<'tcx> BranchVisitor<'tcx> {
                     panic!("qpath is: {:?}", qpath);
                 }
             },
+            rustc_hir::PatKind::Binding(_, _, _, _) => {
+                let patt = Patt {
+                    pat_str: pat_source.get_string(),
+                    kind: PattKind::Other(None),
+                };
+                (pat_source, patt)
+            }
             _ => {
                 panic!("pat_kind is: {:?}", pat.kind);
             }
@@ -752,9 +792,15 @@ impl<'tcx> BranchVisitor<'tcx> {
         self.source_cond_map
             .insert(match_source, Condition::Match(cond));
     }
+
+    fn handle_try(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
+        let try_source = SourceInfo::from_span(expr.span, &self.span_re);
+        let cond = Condition::Bool(BoolCond::Other(try_source.get_string()));
+        self.source_cond_map.insert(try_source, cond);
+    }
 }
 
-impl<'tcx> HIRVisitor<'tcx> for BranchVisitor<'tcx> {
+impl<'tcx> Visitor<'tcx> for BranchVisitor<'tcx> {
     fn visit_expr(&mut self, ex: &'tcx rustc_hir::Expr<'tcx>) -> Self::Result {
         match &ex.kind {
             rustc_hir::ExprKind::If(cond_expr, _, _) => {
@@ -765,11 +811,11 @@ impl<'tcx> HIRVisitor<'tcx> for BranchVisitor<'tcx> {
                     self.handle_forloop(block);
                 }
             }
-            rustc_hir::ExprKind::Match(expr, arms, match_kind) => {
-                if let rustc_hir::MatchSource::Normal = match_kind {
-                    self.handle_match(expr, arms)
-                }
-            }
+            rustc_hir::ExprKind::Match(expr, arms, match_kind) => match match_kind {
+                rustc_hir::MatchSource::Normal => self.handle_match(expr, arms),
+                rustc_hir::MatchSource::TryDesugar(_) => self.handle_try(expr),
+                _ => {}
+            },
             _ => {}
         }
         intravisit::walk_expr(self, ex);

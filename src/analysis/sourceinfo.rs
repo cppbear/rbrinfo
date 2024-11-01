@@ -15,21 +15,38 @@ pub struct SourceInfo {
 
 impl SourceInfo {
     pub fn from_span(span: rustc_span::Span, re: &Regex) -> Self {
+        // FIXME: use tcx.sess.source_map() to get the location
+        /*
+        let source_map = self.tcx.sess.source_map();
+        let start = source_map.lookup_char_pos(span.lo());
+        let end = source_map.lookup_char_pos(span.hi());
+        */
         let span_str = format!("{:?}", span);
-        let caps = re.captures(&span_str).unwrap();
+        // println!("span_str: {:?}", span_str);
+        // let caps = re.captures(&span_str).unwrap();
 
-        let file_path = caps.get(1).map_or("", |m| m.as_str());
-        let start_line = caps.get(2).map_or("", |m| m.as_str());
-        let start_column = caps.get(3).map_or("", |m| m.as_str());
-        let end_line = caps.get(4).map_or("", |m| m.as_str());
-        let end_column = caps.get(5).map_or("", |m| m.as_str());
+        if let Some(caps) = re.captures(&span_str) {
+            let file_path = caps.get(1).map_or("", |m| m.as_str());
+            let start_line = caps.get(2).map_or("", |m| m.as_str());
+            let start_column = caps.get(3).map_or("", |m| m.as_str());
+            let end_line = caps.get(4).map_or("", |m| m.as_str());
+            let end_column = caps.get(5).map_or("", |m| m.as_str());
+
+            return SourceInfo {
+                file_path: file_path.to_string(),
+                start_line: start_line.parse::<usize>().unwrap(),
+                start_column: start_column.parse::<usize>().unwrap(),
+                end_line: end_line.parse::<usize>().unwrap(),
+                end_column: end_column.parse::<usize>().unwrap(),
+            };
+        }
 
         SourceInfo {
-            file_path: file_path.to_string(),
-            start_line: start_line.parse::<usize>().unwrap(),
-            start_column: start_column.parse::<usize>().unwrap(),
-            end_line: end_line.parse::<usize>().unwrap(),
-            end_column: end_column.parse::<usize>().unwrap(),
+            file_path: "".to_string(),
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 0,
         }
     }
 
@@ -167,5 +184,15 @@ impl Debug for SourceInfo {
             "SourceInfo({}:{}:{}-{}:{})",
             self.file_path, self.start_line, self.start_column, self.end_line, self.end_column
         )
+    }
+}
+
+impl serde::Serialize for SourceInfo {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let s = format!(
+            "{}:{}:{}-{}:{}",
+            self.file_path, self.start_line, self.start_column, self.end_line, self.end_column
+        );
+        serializer.serialize_str(&s)
     }
 }

@@ -24,6 +24,7 @@ pub mod analysis {
     mod branchvisitor;
     pub mod callback;
     mod condition;
+    mod hirvisitor;
     pub mod option;
     mod sourceinfo;
 }

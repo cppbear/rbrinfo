@@ -4,20 +4,21 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub enum Condition {
     Bool(BoolCond),
     For(ForCond),
     Match(MatchCond),
+    Try(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub enum BoolCond {
     Binary(BinaryCond),
     Other(String),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize)]
 pub enum BinKind {
     Eq,
     Lt,
@@ -51,7 +52,7 @@ impl BoolCond {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct BinaryCond {
     pub kind: BinKind,
     pub expr: String,
@@ -93,7 +94,7 @@ impl BinaryCond {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct ForCond {
     pub iter_var: String,
     pub iter_range: String,
@@ -105,7 +106,7 @@ impl ForCond {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub enum PattKind {
     Enum(usize),
     StructLike(HashMap<usize, (Option<u128>, SourceInfo)>),
@@ -113,20 +114,20 @@ pub enum PattKind {
     Wild,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Patt {
     pub pat_str: String,
     pub kind: PattKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Arm {
     pub pat: Patt,
     pub guard: Option<HashMap<SourceInfo, Condition>>,
     pub body_source: Option<SourceInfo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub enum MatchKind {
     Enum(Vec<String>),
     StructLike(Option<Vec<String>>),
@@ -143,7 +144,7 @@ impl MatchKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct MatchCond {
     pub match_str: String,
     pub match_kind: MatchKind,

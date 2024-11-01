@@ -1,5 +1,5 @@
-use super::branchvisitor::BranchVisitor;
 use super::condition::{Arm, BoolCond, Condition, MatchCond, MatchKind, PattKind};
+use super::hirvisitor::HirVisitor;
 use super::option::AnalysisOption;
 use super::sourceinfo::SourceInfo;
 use petgraph::dot::Config;
@@ -10,8 +10,6 @@ use regex::Regex;
 use rustc_data_structures::graph::dominators::Dominators;
 use rustc_data_structures::graph::StartNode;
 use rustc_driver::Compilation;
-use rustc_hir::def;
-use rustc_hir::intravisit;
 use rustc_interface::interface;
 use rustc_interface::Queries;
 use rustc_middle::mir::{BasicBlock, Operand};
@@ -50,6 +48,19 @@ impl rustc_driver::Callbacks for MirCheckerCallbacks {
         config.crate_cfg.push("mir_checker".to_string());
         info!("Source file: {}", self.source_name);
     }
+
+    // fn after_crate_root_parsing<'tcx>(
+    //     &mut self,
+    //     _compiler: &interface::Compiler,
+    //     _queries: &'tcx Queries<'tcx>,
+    // ) -> Compilation {
+    //     _queries
+    //         .global_ctxt()
+    //         .unwrap()
+    //         .enter(|tcx| self.run_analysis(tcx));
+
+    //     Compilation::Continue
+    // }
 
     fn after_expansion<'tcx>(
         &mut self,
@@ -211,7 +222,6 @@ impl FnBlocks<'_> {
 
     fn mir_out(&self) {
         let mut mir_str = String::new();
-        mir_str.push_str(&format!("fn {}\n\n", self.fn_name));
         for block in &self.blocks {
             mir_str.push_str(&format!("{:?}\n", block.block_name));
             let mut i = 0;
@@ -232,591 +242,11 @@ impl FnBlocks<'_> {
             mir_str.push_str(&format!("  succs {:?}\n", block.suc_blocks));
             mir_str.push_str("\n");
         }
-        let dir_path = "./mir";
+        let dir_path = format!("./rbrinfo/{}", self.fn_name);
         let file_path = format!("{}/mir.txt", dir_path);
         fs::create_dir_all(dir_path).unwrap();
         let mut file = File::create(file_path).unwrap();
         file.write_all(mir_str.as_bytes()).unwrap();
-    }
-
-    fn handle_switchint(
-        &self,
-        discr: &Operand,
-        targets: &SwitchTargets,
-        block_name: BasicBlock,
-        ternimator_span: Span,
-        path: &Vec<BasicBlock>,
-        branches: &HashSet<(BasicBlock, BasicBlock)>,
-        conds: &Vec<(String, String)>,
-        stack: &mut Vec<DFSCxt>,
-        loop_paths: &Vec<Vec<BasicBlock>>,
-    ) {
-        let cond_source = self.get_source_info(ternimator_span);
-        let cmp_value = if targets.iter().len() == 1 {
-            Some(targets.iter().next().unwrap().0)
-        } else {
-            None
-        };
-        for (value, target) in targets.iter() {
-            let mut path = path.clone();
-            let mut branches = branches.clone();
-            if branches.insert((block_name, target)) {
-                // new branch
-                if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source) {
-                    let mut conds = conds.clone();
-                    match condition {
-                        Condition::Bool(bool_cond) => match bool_cond {
-                            BoolCond::Binary(bin_cond) => {
-                                if bin_cond.eq_with_int() {
-                                    conds.push((bin_cond.get_cond_str(), "true".to_string()));
-                                } else if bin_cond.ne_with_int() {
-                                    conds.push((bin_cond.get_cond_str(), "false".to_string()));
-                                } else {
-                                    if value == 0 {
-                                        conds.push((bin_cond.get_cond_str(), "false".to_string()));
-                                    } else {
-                                        conds.push((bin_cond.get_cond_str(), "true".to_string()));
-                                    }
-                                }
-                            }
-                            BoolCond::Other(cond_str) => {
-                                if value == 0 {
-                                    conds.push((cond_str, "false".to_string()));
-                                } else {
-                                    conds.push((cond_str, "true".to_string()));
-                                }
-                            }
-                        },
-                        Condition::For(for_cond) => {
-                            let value_str = match value {
-                                0 => "false",
-                                1 => "true",
-                                _ => panic!("Invalid value"),
-                            };
-                            conds.push((for_cond.get_cond_str(), value_str.to_string()));
-                        }
-                        Condition::Match(match_cond) => {
-                            let mut found = false;
-                            if let Some(pat_sources) = arm_source {
-                                assert_eq!(pat_sources.len(), 1);
-                                let pat_source = &pat_sources[0];
-                                let arm = match_cond.arms.get(pat_source).unwrap();
-                                match &arm.pat.kind {
-                                    PattKind::Other(lit) => {
-                                        if let Some(lit) = lit {
-                                            if value == *lit {
-                                                conds.push((
-                                                    format!(
-                                                        "{} matches {}",
-                                                        match_cond.match_str, arm.pat.pat_str
-                                                    ),
-                                                    "true".to_string(),
-                                                ));
-                                                found = true;
-                                            }
-                                        } else {
-                                            if value == 0 {
-                                                conds.push((
-                                                    format!(
-                                                        "{} matches {}",
-                                                        match_cond.match_str, arm.pat.pat_str
-                                                    ),
-                                                    "false".to_string(),
-                                                ));
-                                                found = true;
-                                            }
-                                        }
-                                    }
-                                    PattKind::Enum(index) => {
-                                        if value == *index as u128 {
-                                            conds.push((
-                                                format!(
-                                                    "{} matches {}",
-                                                    match_cond.match_str, arm.pat.pat_str
-                                                ),
-                                                "true".to_string(),
-                                            ));
-                                            found = true;
-                                        }
-                                    }
-                                    PattKind::StructLike(field_map) => {
-                                        for (field_index, (lit, source)) in field_map {
-                                            if cond_source == *source {
-                                                info!("Ternimator span points to field pattern");
-                                                if let Some(lit) = lit {
-                                                    if value == *lit {
-                                                        conds.push((
-                                                            format!(
-                                                                "{}.{} matches {}",
-                                                                match_cond.match_str,
-                                                                match_cond
-                                                                    .match_kind
-                                                                    .get_field_name(*field_index),
-                                                                source.get_string()
-                                                            ),
-                                                            "true".to_string(),
-                                                        ));
-                                                    }
-                                                } else {
-                                                    if value == 0 {
-                                                        conds.push((
-                                                            format!(
-                                                                "{}.{} matches {}",
-                                                                match_cond.match_str,
-                                                                match_cond
-                                                                    .match_kind
-                                                                    .get_field_name(*field_index),
-                                                                source.get_string()
-                                                            ),
-                                                            "false".to_string(),
-                                                        ));
-                                                    }
-                                                }
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                        if !found {
-                                            warn!("UNCOMMON");
-                                            match discr {
-                                                Operand::Copy(place) | Operand::Move(place) => {
-                                                    println!(
-                                                        "place: {:?} {:?}",
-                                                        place, place.projection
-                                                    );
-                                                    for proj in place.projection.iter() {
-                                                        if let rustc_middle::mir::ProjectionElem::Field(
-                                                                                idx,
-                                                                                _,
-                                                                            ) = proj
-                                                                            {
-                                                                                if let Some((lit, source)) =
-                                                                                    field_map.get(&idx.index())
-                                                                                {
-                                                                                    if cond_source == *source {
-                                                                                        if let Some(lit) = lit {
-                                                                                            if value == *lit {
-                                                                                                conds.push((
-                                                                                                    format!(
-                                                                                                        "{}.{} matches {}",
-                                                                                                        match_cond.match_str,
-                                                                                                        match_cond.match_kind.get_field_name(idx.index()),
-                                                                                                        source.get_string()
-                                                                                                    ),
-                                                                                                    "true".to_string(),
-                                                                                                ));
-                                                                                            }
-                                                                                        } else {
-                                                                                            if value == 0 {
-                                                                                                conds.push((
-                                                                                                    format!(
-                                                                                                        "{}.{} matches {}",
-                                                                                                        match_cond.match_str,
-                                                                                                        match_cond.match_kind.get_field_name(idx.index()),
-                                                                                                        source.get_string()
-                                                                                                    ),
-                                                                                                    "false".to_string(),
-                                                                                                ));
-                                                                                            }
-                                                                                        }
-                                                                                        found = true;
-                                                                                        break;
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                                if self.block_in_arm(&self.blocks[target.index()], arm) {
-                                    conds.push((
-                                        format!(
-                                            "{} matches {}",
-                                            match_cond.match_str, arm.pat.pat_str
-                                        ),
-                                        "true".to_string(),
-                                    ));
-                                    found = true;
-                                }
-                            }
-                            if !found {
-                                // println!("!found");
-                                for (_, arm) in &match_cond.arms {
-                                    match &arm.pat.kind {
-                                        PattKind::Other(lit) => {
-                                            if let Some(lit) = lit {
-                                                if value == *lit {
-                                                    conds.push((
-                                                        format!(
-                                                            "{} matches {}",
-                                                            match_cond.match_str, arm.pat.pat_str
-                                                        ),
-                                                        "true".to_string(),
-                                                    ));
-                                                    break;
-                                                }
-                                            } else {
-                                                if value == 0 {
-                                                    conds.push((
-                                                        format!(
-                                                            "{} matches {}",
-                                                            match_cond.match_str, arm.pat.pat_str
-                                                        ),
-                                                        "false".to_string(),
-                                                    ));
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        PattKind::Enum(index) => {
-                                            if value == *index as u128 {
-                                                conds.push((
-                                                    format!(
-                                                        "{} matches {}",
-                                                        match_cond.match_str, arm.pat.pat_str
-                                                    ),
-                                                    "true".to_string(),
-                                                ));
-                                                break;
-                                            }
-                                        }
-                                        PattKind::StructLike(field_map) => {
-                                            match discr {
-                                                Operand::Copy(place) | Operand::Move(place) => {
-                                                    // println!(
-                                                    //     "place: {:?} {:?}",
-                                                    //     place, place.projection
-                                                    // );
-                                                    for proj in place.projection.iter() {
-                                                        if let rustc_middle::mir::ProjectionElem::Field(
-                                                                                idx,
-                                                                                _,
-                                                                            ) = proj
-                                                                            {
-                                                                                if let Some((lit, source)) =
-                                                                                    field_map.get(&idx.index())
-                                                                                {
-                                                                                    if let Some(lit) = lit {
-                                                                                        if value == *lit {
-                                                                                            conds.push((
-                                                                                                format!(
-                                                                                                    "{}.{} matches {}",
-                                                                                                    match_cond.match_str,
-                                                                                                    match_cond.match_kind.get_field_name(idx.index()),
-                                                                                                    source.get_string()
-                                                                                                ),
-                                                                                                "true".to_string(),
-                                                                                            ));
-                                                                                            break;
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            for (_, arm) in &match_cond.arms {
-                                if self.block_in_arm(&self.blocks[target.index()], arm) {
-                                    conds.push((
-                                        format!(
-                                            "{} matches {}",
-                                            match_cond.match_str, arm.pat.pat_str
-                                        ),
-                                        "true".to_string(),
-                                    ));
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    path.push(target);
-                    stack.push(DFSCxt::new(
-                        target,
-                        path,
-                        conds,
-                        branches,
-                        loop_paths.clone(),
-                    ));
-                } else {
-                    panic!("No matched condition found for {:?}", cond_source);
-                }
-            } else {
-            }
-        }
-        let mut path = path.clone();
-        let mut branches = branches.clone();
-        if !matches!(
-            self.blocks[targets.otherwise().index()].terminator.kind,
-            TerminatorKind::Unreachable
-        ) {
-            if branches.insert((block_name, targets.otherwise())) {
-                // new branch
-                if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source) {
-                    let mut conds = conds.clone();
-                    match condition {
-                        Condition::Bool(bool_cond) => match bool_cond {
-                            BoolCond::Binary(bin_cond) => {
-                                if bin_cond.eq_with_int() {
-                                    conds.push((bin_cond.get_cond_str(), "false".to_string()));
-                                } else if bin_cond.ne_with_int() {
-                                    conds.push((bin_cond.get_cond_str(), "true".to_string()));
-                                } else {
-                                    conds.push((bin_cond.get_cond_str(), "true".to_string()));
-                                }
-                            }
-                            BoolCond::Other(cond_str) => {
-                                conds.push((cond_str, "true".to_string()));
-                            }
-                        },
-                        Condition::For(for_cond) => {
-                            conds.push((for_cond.get_cond_str(), "otherwise".to_string()));
-                        }
-                        Condition::Match(match_cond) => {
-                            let mut found = false;
-                            if let Some(pat_sources) = arm_source {
-                                assert_eq!(pat_sources.len(), 1);
-                                let pat_source = &pat_sources[0];
-                                let arm = match_cond.arms.get(pat_source).unwrap();
-                                match &arm.pat.kind {
-                                    PattKind::Other(lit) => {
-                                        if let Some(_) = lit {
-                                            conds.push((
-                                                format!(
-                                                    "{} matches {}",
-                                                    match_cond.match_str, arm.pat.pat_str
-                                                ),
-                                                "false".to_string(),
-                                            ));
-                                            found = true;
-                                        } else {
-                                            conds.push((
-                                                format!(
-                                                    "{} matches {}",
-                                                    match_cond.match_str, arm.pat.pat_str
-                                                ),
-                                                "true".to_string(),
-                                            ));
-                                            found = true;
-                                        }
-                                    }
-                                    PattKind::Enum(_) => {
-                                        conds.push((
-                                            format!(
-                                                "{} matches {}",
-                                                match_cond.match_str, arm.pat.pat_str
-                                            ),
-                                            "false".to_string(),
-                                        ));
-                                        found = true;
-                                    }
-                                    PattKind::StructLike(field_map) => {
-                                        for (field_index, (lit, source)) in field_map {
-                                            if cond_source == *source {
-                                                if let Some(_) = lit {
-                                                    conds.push((
-                                                        format!(
-                                                            "{}.{} matches {}",
-                                                            match_cond.match_str,
-                                                            match_cond
-                                                                .match_kind
-                                                                .get_field_name(*field_index),
-                                                            source.get_string()
-                                                        ),
-                                                        "false".to_string(),
-                                                    ));
-                                                } else {
-                                                    conds.push((
-                                                        format!(
-                                                            "{}.{} matches {}",
-                                                            match_cond.match_str,
-                                                            match_cond
-                                                                .match_kind
-                                                                .get_field_name(*field_index),
-                                                            source.get_string()
-                                                        ),
-                                                        "true".to_string(),
-                                                    ));
-                                                }
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                        if !found {
-                                            match discr {
-                                                Operand::Copy(place) | Operand::Move(place) => {
-                                                    // println!(
-                                                    //     "place: {:?} {:?}",
-                                                    //     place, place.projection
-                                                    // );
-                                                    for proj in place.projection.iter() {
-                                                        if let rustc_middle::mir::ProjectionElem::Field(
-                                                                                idx,
-                                                                                _,
-                                                                            ) = proj
-                                                                            {
-                                                                                if let Some((lit, source)) =
-                                                                                    field_map.get(&idx.index())
-                                                                                {
-                                                                                    if cond_source == *source {
-                                                                                        if let Some(_) = lit {
-                                                                                            conds.push((
-                                                                                                format!(
-                                                                                                    "{}.{} matches {}",
-                                                                                                    match_cond.match_str,
-                                                                                                    match_cond.match_kind.get_field_name(idx.index()),
-                                                                                                    source.get_string()
-                                                                                                ),
-                                                                                                "false".to_string(),
-                                                                                            ));
-                                                                                        } else {
-                                                                                            conds.push((
-                                                                                                format!(
-                                                                                                    "{}.{} matches {}",
-                                                                                                    match_cond.match_str,
-                                                                                                    match_cond.match_kind.get_field_name(idx.index()),
-                                                                                                    source.get_string()
-                                                                                                ),
-                                                                                                "true".to_string(),
-                                                                                            ));
-                                                                                        }
-                                                                                        found = true;
-                                                                                        break;
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                                if self.block_in_arm(&self.blocks[targets.otherwise().index()], arm)
-                                {
-                                    conds.push((
-                                        format!(
-                                            "{} matches {}",
-                                            match_cond.match_str, arm.pat.pat_str
-                                        ),
-                                        "true".to_string(),
-                                    ));
-                                    found = true;
-                                }
-                            }
-                            if !found {
-                                // println!("otherwise !found");
-                                for (_, arm) in &match_cond.arms {
-                                    match &arm.pat.kind {
-                                        PattKind::Other(lit) => {
-                                            if let Some(lit) = lit {
-                                                if let Some(cmp_value) = cmp_value {
-                                                    if cmp_value == *lit {
-                                                        conds.push((
-                                                            format!(
-                                                                "{} matches {}",
-                                                                match_cond.match_str,
-                                                                arm.pat.pat_str
-                                                            ),
-                                                            "false".to_string(),
-                                                        ));
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        PattKind::Enum(_) => {
-                                            conds.push((
-                                                format!(
-                                                    "{} matches {}",
-                                                    match_cond.match_str, arm.pat.pat_str
-                                                ),
-                                                "false".to_string(),
-                                            ));
-                                            // break;
-                                        }
-                                        PattKind::StructLike(field_map) => {
-                                            match discr {
-                                                Operand::Copy(place) | Operand::Move(place) => {
-                                                    // println!(
-                                                    //     "place: {:?} {:?}",
-                                                    //     place, place.projection
-                                                    // );
-                                                    for proj in place.projection.iter() {
-                                                        if let rustc_middle::mir::ProjectionElem::Field(
-                                                                                idx,
-                                                                                _,
-                                                                            ) = proj
-                                                                        {
-                                                                            if let Some((lit, source)) =
-                                                                                field_map.get(&idx.index())
-                                                                            {
-                                                                                if let Some(lit) = lit {
-                                                                                    if let Some(cmp_value) = cmp_value {
-                                                                                        if cmp_value == *lit {
-                                                                                            conds.push((
-                                                                                                format!(
-                                                                                                    "{}.{} matches {}",
-                                                                                                    match_cond.match_str,
-                                                                                                    match_cond.match_kind.get_field_name(idx.index()),
-                                                                                                    source.get_string()
-                                                                                                ),
-                                                                                                "false".to_string(),
-                                                                                            ));
-                                                                                            break;
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            for (_, arm) in &match_cond.arms {
-                                if self.block_in_arm(&self.blocks[targets.otherwise().index()], arm)
-                                {
-                                    conds.push((
-                                        format!(
-                                            "{} matches {}",
-                                            match_cond.match_str, arm.pat.pat_str
-                                        ),
-                                        "true".to_string(),
-                                    ));
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    path.push(targets.otherwise());
-                    stack.push(DFSCxt::new(
-                        targets.otherwise(),
-                        path,
-                        conds,
-                        branches,
-                        loop_paths.clone(),
-                    ));
-                } else {
-                    panic!("No matched condition found");
-                }
-            } else {
-            }
-        }
     }
 
     fn handle_enum_match(
@@ -863,6 +293,7 @@ impl FnBlocks<'_> {
                                 block_name
                             );
                         }
+                        PattKind::Other(_) => {}
                         _ => {
                             panic!(
                                 "Invalid pattern kind for Enum. Check Arm of {:?}",
@@ -905,6 +336,7 @@ impl FnBlocks<'_> {
                             block_name
                         );
                     }
+                    PattKind::Other(_) => {}
                     _ => {
                         panic!(
                             "Invalid pattern kind for Enum. Check Arm of {:?}",
@@ -950,6 +382,7 @@ impl FnBlocks<'_> {
                                 }
                             }
                             PattKind::Wild => {}
+                            PattKind::Other(_) => {}
                             _ => {
                                 panic!(
                                     "Invalid pattern kind for Enum. Check Arm of {:?}",
@@ -1013,6 +446,7 @@ impl FnBlocks<'_> {
                             ));
                             found = true;
                         }
+                        PattKind::Other(_) => {}
                         _ => {
                             panic!(
                                 "Invalid pattern kind for Enum. Check Arm of {:?}",
@@ -1061,8 +495,6 @@ impl FnBlocks<'_> {
         match_cond: &MatchCond,
         arm_source: &Option<Vec<SourceInfo>>,
     ) {
-        let succ_size = targets.iter().len() + 1;
-        assert!(succ_size <= 2);
         let DFSCxt {
             block,
             path,
@@ -1182,6 +614,7 @@ impl FnBlocks<'_> {
                         PattKind::Wild => {
                             error!("Span of Terminator points to _ pattern");
                         }
+                        PattKind::Other(_) => {}
                         _ => {
                             panic!("Invalid pattern kind for Enum");
                         }
@@ -1293,6 +726,7 @@ impl FnBlocks<'_> {
                     PattKind::Wild => {
                         error!("Span of Terminator points to _ pattern");
                     }
+                    PattKind::Other(_) => {}
                     _ => {
                         panic!("Invalid pattern kind for Enum");
                     }
@@ -1352,6 +786,7 @@ impl FnBlocks<'_> {
                                 _ => {}
                             },
                             PattKind::Wild => {}
+                            PattKind::Other(_) => {}
                             _ => {
                                 panic!(
                                     "Invalid pattern kind for Enum. Check Arm of {:?}",
@@ -1382,11 +817,7 @@ impl FnBlocks<'_> {
                 }
             }
             // otherwise branch
-            let cmp_value = if targets.iter().len() == 1 {
-                Some(targets.iter().next().unwrap().0)
-            } else {
-                None
-            };
+            let mut cmp_values: Vec<u128> = targets.iter().map(|(v, _)| v).collect();
             let mut branches = branches.clone();
             if !matches!(
                 self.blocks[targets.otherwise().index()].terminator.kind,
@@ -1397,7 +828,7 @@ impl FnBlocks<'_> {
                 let mut path = path.clone();
                 let mut conds = conds.clone();
 
-                'arms: for (arm_source, arm) in &match_cond.arms {
+                for (arm_source, arm) in &match_cond.arms {
                     match &arm.pat.kind {
                         PattKind::StructLike(field_map) => match discr {
                             Operand::Copy(place) | Operand::Move(place) => {
@@ -1405,21 +836,19 @@ impl FnBlocks<'_> {
                                     if let rustc_middle::mir::ProjectionElem::Field(idx, _) = proj {
                                         if let Some((lit, source)) = field_map.get(&idx.index()) {
                                             if let Some(lit) = lit {
-                                                if let Some(cmp_value) = cmp_value {
-                                                    if cmp_value == *lit {
-                                                        conds.push((
-                                                            format!(
-                                                                "{}.{} matches {}",
-                                                                match_cond.match_str,
-                                                                match_cond
-                                                                    .match_kind
-                                                                    .get_field_name(idx.index()),
-                                                                source.get_string()
-                                                            ),
-                                                            "false".to_string(),
-                                                        ));
-                                                        break 'arms;
-                                                    }
+                                                if cmp_values.contains(lit) {
+                                                    cmp_values.retain(|v| v != lit);
+                                                    conds.push((
+                                                        format!(
+                                                            "{}.{} matches {}",
+                                                            match_cond.match_str,
+                                                            match_cond
+                                                                .match_kind
+                                                                .get_field_name(idx.index()),
+                                                            source.get_string()
+                                                        ),
+                                                        "false".to_string(),
+                                                    ));
                                                 }
                                             }
                                         }
@@ -1430,6 +859,7 @@ impl FnBlocks<'_> {
                             _ => {}
                         },
                         PattKind::Wild => {}
+                        PattKind::Other(_) => {}
                         _ => {
                             panic!(
                                 "Invalid pattern kind for Enum. Check Arm of {:?}",
@@ -1469,10 +899,6 @@ impl FnBlocks<'_> {
         match_cond: &MatchCond,
         arm_source: &Option<Vec<SourceInfo>>,
     ) {
-        let succ_size = targets.iter().len() + 1;
-        if succ_size > 2 {
-            warn!("{:?} has more than 2 successors", dfs_cxt.block);
-        }
         let DFSCxt {
             block,
             path,
@@ -1616,17 +1042,17 @@ impl FnBlocks<'_> {
                                 } else {
                                     if value == 0 {
                                         warn!(
-                                            "Branch {:?} -> {:?}, Arm of {:?}",
+                                            "Branch {:?} -> {:?}. Arm of {:?}",
                                             block_name, target, arm_source
                                         );
-                                        conds.push((
-                                            format!(
-                                                "{} matches {}",
-                                                match_cond.match_str, arm.pat.pat_str
-                                            ),
-                                            "false".to_string(),
-                                        ));
-                                        break;
+                                        // conds.push((
+                                        //     format!(
+                                        //         "{} matches {}",
+                                        //         match_cond.match_str, arm.pat.pat_str
+                                        //     ),
+                                        //     "false".to_string(),
+                                        // ));
+                                        // break;
                                     }
                                 }
                             }
@@ -1661,11 +1087,7 @@ impl FnBlocks<'_> {
                 }
             }
             // otherwise branch
-            let cmp_value = if targets.iter().len() == 1 {
-                Some(targets.iter().next().unwrap().0)
-            } else {
-                None
-            };
+            let mut cmp_values: Vec<u128> = targets.iter().map(|(v, _)| v).collect();
             let mut branches = branches.clone();
             if !matches!(
                 self.blocks[targets.otherwise().index()].terminator.kind,
@@ -1680,17 +1102,15 @@ impl FnBlocks<'_> {
                     match &arm.pat.kind {
                         PattKind::Other(lit) => {
                             if let Some(lit) = lit {
-                                if let Some(cmp_value) = cmp_value {
-                                    if cmp_value == *lit {
-                                        conds.push((
-                                            format!(
-                                                "{} matches {}",
-                                                match_cond.match_str, arm.pat.pat_str
-                                            ),
-                                            "false".to_string(),
-                                        ));
-                                        break;
-                                    }
+                                if cmp_values.contains(lit) {
+                                    cmp_values.retain(|v| v != lit);
+                                    conds.push((
+                                        format!(
+                                            "{} matches {}",
+                                            match_cond.match_str, arm.pat.pat_str
+                                        ),
+                                        "false".to_string(),
+                                    ));
                                 }
                             }
                         }
@@ -1917,9 +1337,93 @@ impl FnBlocks<'_> {
                         self.handle_other_match(stack, dfs_cxt, targets, &match_cond, &arm_source);
                     }
                 },
+                Condition::Try(try_str) => {
+                    // common branches
+                    for (value, target) in targets.iter() {
+                        let mut branches = branches.clone();
+                        if branches.insert((block_name, target)) {
+                            let mut path = path.clone();
+                            let mut conds = conds.clone();
+
+                            let value_str = match value {
+                                0 => "Ok",
+                                1 => "Err",
+                                _ => panic!("Invalid value"),
+                            };
+                            conds.push((try_str.clone(), value_str.to_string()));
+
+                            path.push(target);
+                            stack.push(DFSCxt::new(
+                                target,
+                                path,
+                                conds,
+                                branches,
+                                loop_paths.clone(),
+                            ));
+                        }
+                    }
+                    // otherwise branch
+                    let mut branches = branches.clone();
+                    if !matches!(
+                        self.blocks[targets.otherwise().index()].terminator.kind,
+                        TerminatorKind::Unreachable
+                    ) && branches.insert((block_name, targets.otherwise()))
+                    {
+                        let mut path = path.clone();
+                        let mut conds = conds.clone();
+
+                        conds.push((try_str.clone(), "otherwise".to_string()));
+
+                        path.push(targets.otherwise());
+                        stack.push(DFSCxt::new(
+                            targets.otherwise(),
+                            path,
+                            conds,
+                            branches,
+                            loop_paths.clone(),
+                        ));
+                    }
+                }
             }
         } else {
-            panic!("No matched condition found for {:?}", cond_source);
+            error!("No matched condition found for {:?}", cond_source);
+            return;
+            // // common branches
+            // for (_, target) in targets.iter() {
+            //     let mut branches = branches.clone();
+            //     if branches.insert((block_name, target)) {
+            //         let mut path = path.clone();
+            //         let conds = conds.clone();
+
+            //         path.push(target);
+            //         stack.push(DFSCxt::new(
+            //             target,
+            //             path,
+            //             conds,
+            //             branches,
+            //             loop_paths.clone(),
+            //         ));
+            //     }
+            // }
+            // // otherwise branch
+            // let mut branches = branches.clone();
+            // if !matches!(
+            //     self.blocks[targets.otherwise().index()].terminator.kind,
+            //     TerminatorKind::Unreachable
+            // ) && branches.insert((block_name, targets.otherwise()))
+            // {
+            //     let mut path = path.clone();
+            //     let conds = conds.clone();
+
+            //     path.push(targets.otherwise());
+            //     stack.push(DFSCxt::new(
+            //         targets.otherwise(),
+            //         path,
+            //         conds,
+            //         branches,
+            //         loop_paths.clone(),
+            //     ));
+            // }
         }
     }
 
@@ -2053,6 +1557,7 @@ impl FnBlocks<'_> {
             }
         }
 
+        /*
         let mut chain_id = 0;
         let mut chains_str = String::from("\n");
         for (conds, path) in &cond_chains {
@@ -2083,6 +1588,30 @@ impl FnBlocks<'_> {
             chain_id += 1;
         }
         println!("{}", chains_str);
+         */
+        self.dump_to_json(&cond_chains);
+    }
+
+    fn dump_to_json(&self, cond_chains: &Vec<(Vec<(String, String)>, Vec<BasicBlock>)>) {
+        let mut json_map = serde_json::Map::new();
+        let mut id = 1;
+        for (conds, path) in cond_chains {
+            let chain_id = format!("{:04}", id);
+            let mut chain_map = serde_json::Map::new();
+            chain_map.insert("conds".to_string(), serde_json::json!(conds));
+            chain_map.insert(
+                "path".to_string(),
+                serde_json::json!(path.iter().map(|x| x.index()).collect::<Vec<usize>>()),
+            );
+            json_map.insert(chain_id, serde_json::json!(chain_map));
+            id += 1;
+        }
+        let dir_path = format!("./rbrinfo/{}", self.fn_name);
+        let file_path = format!("{}/cond_chains.json", dir_path);
+        fs::create_dir_all(dir_path).unwrap();
+        let json = serde_json::to_string_pretty(&json_map).unwrap();
+        let mut file = File::create(file_path).unwrap();
+        file.write_all(json.as_bytes()).unwrap();
     }
 
     fn dump_cfg_to_dot(&self) {
@@ -2109,7 +1638,7 @@ impl FnBlocks<'_> {
 
         // 用Graphviz Dot格式输出并写入文件
         let dot = Dot::with_config(&graph, &[Config::EdgeNoLabel]);
-        let mut file = File::create(format!("{}_cfg.dot", self.fn_name)).unwrap();
+        let mut file = File::create(format!("rbrinfo/{}/cfg.dot", self.fn_name)).unwrap();
         writeln!(file, "{:#}", dot).unwrap();
     }
 }
@@ -2128,79 +1657,53 @@ impl MirCheckerCallbacks {
             ColorChoice::Auto,
         )
         .unwrap();
-        let mut ret: Vec<FnBlocks> = vec![];
-        let hir_krate = tcx.hir();
-        for id in hir_krate.items() {
-            let item = id.owner_id.def_id;
-            match tcx.def_kind(item) {
-                def::DefKind::Fn => {
-                    //函数
-                    let fn_name = format!("{:?}", item.to_def_id());
-                    let hir = hir_krate.body_owned_by(item);
-                    let mir = tcx.mir_built(item).borrow();
-                    // write HIR to file
-                    let dir_path = "./hir";
-                    let file_path = format!("{}/hir.txt", dir_path);
-                    fs::create_dir_all(dir_path).unwrap();
-                    let mut file = File::create(file_path).unwrap();
-                    let buf = format!("{}\n\n{:#?}", fn_name, hir);
-                    file.write_all(buf.as_bytes()).unwrap();
-                    // tranverse HIR
-                    let fn_source = SourceInfo::from_span(hir.value.span, &self.span_re);
-                    let mut visitor = BranchVisitor::new(
-                        tcx,
-                        fn_source,
-                        self.span_re.clone(),
-                        tcx.typeck(hir.id().hir_id.owner),
-                    );
-                    intravisit::walk_body::<BranchVisitor>(&mut visitor, &hir);
-                    // visitor.walk_body
-                    visitor.output_map();
-                    self.cond_map = visitor.move_map();
 
-                    let mut fn_blocks: Vec<MyBlock> = vec![];
-                    let blocks = &mir.basic_blocks;
-                    let pre_blocks = blocks.predecessors();
-                    let mut suc_infos: HashMap<BasicBlock, Vec<BasicBlock>> = HashMap::new();
-                    for i in 0..=blocks.len() - 1 {
-                        suc_infos.insert(BasicBlock::from_usize(i), vec![]);
-                    }
-                    for (block, data) in blocks.iter_enumerated() {
-                        let statements = data.statements.clone();
-                        let terminator = data.terminator.clone().unwrap();
-                        let mut block_pre_blocks: Vec<BasicBlock> = vec![];
-                        for b in &pre_blocks[block] {
-                            block_pre_blocks.push(*b);
-                            suc_infos.get_mut(b).unwrap().push(block);
-                        }
-                        let a_block = MyBlock {
-                            block_name: block,
-                            statements,
-                            terminator,
-                            pre_blocks: block_pre_blocks,
-                            suc_blocks: vec![],
-                        };
-                        fn_blocks.push(a_block);
-                    }
-                    for block in fn_blocks.iter_mut() {
-                        block.suc_blocks = suc_infos.get(&block.block_name).unwrap().clone();
-                    }
-                    let a_fn_block = FnBlocks {
-                        fn_name,
-                        start_node: blocks.start_node(),
-                        blocks: fn_blocks,
-                        dominators: blocks.dominators().clone(),
-                        cond_chains: vec![],
-                        re: self.span_re.clone(),
-                        cond_map: self.cond_map.clone(),
-                    };
-                    ret.push(a_fn_block);
-                }
-                _ => {
-                    // println!("mir other kind: {:?}", tcx.def_kind(item));
-                }
+        let hir_map = tcx.hir();
+        let mut visitor = HirVisitor::new(tcx, hir_map, self.span_re.clone());
+        hir_map.visit_all_item_likes_in_crate(&mut visitor);
+        let result = visitor.move_result();
+
+        let mut ret: Vec<FnBlocks> = vec![];
+        for (fn_name, basic_blocks, cond_map) in result {
+            let mut fn_blocks: Vec<MyBlock> = vec![];
+            let blocks: &rustc_middle::mir::BasicBlocks<'_> = &basic_blocks;
+            let pre_blocks = blocks.predecessors();
+            let mut suc_infos: HashMap<BasicBlock, Vec<BasicBlock>> = HashMap::new();
+            for i in 0..=blocks.len() - 1 {
+                suc_infos.insert(BasicBlock::from_usize(i), vec![]);
             }
+            for (block, data) in blocks.iter_enumerated() {
+                let statements = data.statements.clone();
+                let terminator = data.terminator.clone().unwrap();
+                let mut block_pre_blocks: Vec<BasicBlock> = vec![];
+                for b in &pre_blocks[block] {
+                    block_pre_blocks.push(*b);
+                    suc_infos.get_mut(b).unwrap().push(block);
+                }
+                let a_block = MyBlock {
+                    block_name: block,
+                    statements,
+                    terminator,
+                    pre_blocks: block_pre_blocks,
+                    suc_blocks: vec![],
+                };
+                fn_blocks.push(a_block);
+            }
+            for block in fn_blocks.iter_mut() {
+                block.suc_blocks = suc_infos.get(&block.block_name).unwrap().clone();
+            }
+            let a_fn_block = FnBlocks {
+                fn_name,
+                start_node: blocks.start_node(),
+                blocks: fn_blocks,
+                dominators: blocks.dominators().clone(),
+                cond_chains: vec![],
+                re: self.span_re.clone(),
+                cond_map: cond_map.clone(),
+            };
+            ret.push(a_fn_block);
         }
+
         for mut block in ret {
             info!("Start analysis for {:?}", block.fn_name);
             block.mir_out();
