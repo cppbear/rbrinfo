@@ -165,7 +165,7 @@ struct FnBlocks<'a> {
     start_node: BasicBlock,
     blocks: Vec<MyBlock<'a>>,
     dominators: Dominators<BasicBlock>,
-    cond_chains: Vec<Vec<(String, String)>>,
+    cond_chains: Vec<(Vec<(String, String)>, Vec<BasicBlock>)>,
     re: Regex,
     cond_map: HashMap<SourceInfo, Condition>,
 }
@@ -1437,7 +1437,7 @@ impl FnBlocks<'_> {
             Vec::new(),
         );
         stack.push(dfs_cxt);
-        let mut cond_chains: Vec<(Vec<(String, String)>, Vec<BasicBlock>)> = Vec::new();
+        // let mut cond_chains: Vec<(Vec<(String, String)>, Vec<BasicBlock>)> = Vec::new();
         while !stack.is_empty() {
             let mut dfs_cxt = stack.pop().unwrap();
             let DFSCxt {
@@ -1480,22 +1480,11 @@ impl FnBlocks<'_> {
                 // continue;
                 // println!("Final Conds: {:?}", conds);
                 // println!("Final Path: {:?}", path);
-                cond_chains.push((conds.clone(), path.clone()));
+                self.cond_chains.push((conds.clone(), path.clone()));
             } else {
                 let ter_source = block.terminator.source_info;
                 match &block.terminator.kind {
                     TerminatorKind::SwitchInt { discr, targets } => {
-                        // self.handle_switchint(
-                        //     discr,
-                        //     targets,
-                        //     block.block_name,
-                        //     ter_source.span,
-                        //     &path,
-                        //     &branches,
-                        //     &conds,
-                        //     &mut stack,
-                        //     &loop_paths,
-                        // );
                         self.handle_switchint_alt(
                             &mut stack,
                             &dfs_cxt,
@@ -1589,13 +1578,17 @@ impl FnBlocks<'_> {
         }
         println!("{}", chains_str);
          */
-        self.dump_to_json(&cond_chains);
+        // self.dump_to_json(&cond_chains);
     }
 
-    fn dump_to_json(&self, cond_chains: &Vec<(Vec<(String, String)>, Vec<BasicBlock>)>) {
+    // fn get_cond_chains(&self) -> &Vec<(Vec<(String, String)>, Vec<BasicBlock>)> {
+    //     &self.cond_chains
+    // }
+
+    fn chains_to_json(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut json_map = serde_json::Map::new();
         let mut id = 1;
-        for (conds, path) in cond_chains {
+        for (conds, path) in &self.cond_chains {
             let chain_id = format!("{:04}", id);
             let mut chain_map = serde_json::Map::new();
             chain_map.insert("conds".to_string(), serde_json::json!(conds));
@@ -1606,12 +1599,7 @@ impl FnBlocks<'_> {
             json_map.insert(chain_id, serde_json::json!(chain_map));
             id += 1;
         }
-        let dir_path = format!("./rbrinfo/{}", self.fn_name);
-        let file_path = format!("{}/cond_chains.json", dir_path);
-        fs::create_dir_all(dir_path).unwrap();
-        let json = serde_json::to_string_pretty(&json_map).unwrap();
-        let mut file = File::create(file_path).unwrap();
-        file.write_all(json.as_bytes()).unwrap();
+        json_map
     }
 
     fn dump_cfg_to_dot(&self) {
@@ -1704,11 +1692,21 @@ impl MirCheckerCallbacks {
             ret.push(a_fn_block);
         }
 
+        let mut cond_chains = serde_json::Map::new();
+
         for mut block in ret {
             info!("Start analysis for {:?}", block.fn_name);
             block.mir_out();
             block.dump_cfg_to_dot();
             block.iterative_dfs();
+            cond_chains.insert(block.fn_name.clone(), serde_json::json!(block.chains_to_json()));
         }
+
+        let dir_path = "./rbrinfo";
+        let file_path = format!("{}/cond_chains.json", dir_path);
+        fs::create_dir_all(dir_path).unwrap();
+        let json = serde_json::to_string_pretty(&cond_chains).unwrap();
+        let mut file = File::create(file_path).unwrap();
+        file.write_all(json.as_bytes()).unwrap();
     }
 }
