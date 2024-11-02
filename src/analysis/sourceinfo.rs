@@ -2,7 +2,8 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use regex::Regex;
+use rustc_span::source_map::SourceMap;
+use rustc_span::{FileName, RealFileName};
 
 #[derive(Clone, Hash, PartialEq, PartialOrd, Eq, Ord)]
 pub struct SourceInfo {
@@ -14,43 +15,34 @@ pub struct SourceInfo {
 }
 
 impl SourceInfo {
-    pub fn from_span(span: rustc_span::Span, re: &Regex) -> Self {
-        // FIXME: use tcx.sess.source_map() to get the location
-        /*
-        let source_map = self.tcx.sess.source_map();
+    pub fn from_span(span: rustc_span::Span, source_map: &SourceMap) -> Self {
         let start = source_map.lookup_char_pos(span.lo());
         let end = source_map.lookup_char_pos(span.hi());
-        */
-        let span_str = format!("{:?}", span);
-        // println!("span_str: {:?}", span_str);
-        // let caps = re.captures(&span_str).unwrap();
 
-        if let Some(caps) = re.captures(&span_str) {
-            let file_path = caps.get(1).map_or("", |m| m.as_str());
-            let start_line = caps.get(2).map_or("", |m| m.as_str());
-            let start_column = caps.get(3).map_or("", |m| m.as_str());
-            let end_line = caps.get(4).map_or("", |m| m.as_str());
-            let end_column = caps.get(5).map_or("", |m| m.as_str());
-
-            return SourceInfo {
-                file_path: file_path.to_string(),
-                start_line: start_line.parse::<usize>().unwrap(),
-                start_column: start_column.parse::<usize>().unwrap(),
-                end_line: end_line.parse::<usize>().unwrap(),
-                end_column: end_column.parse::<usize>().unwrap(),
-            };
-        }
+        let file_path = match &start.file.name {
+            FileName::Real(realname) => {
+                format!("{}", realname.local_path_if_available().display())
+            }
+            _ => {
+                error!("{:?} is NOT a real path.", start.file.name);
+                String::new()
+            }
+        };
 
         SourceInfo {
-            file_path: "".to_string(),
-            start_line: 0,
-            start_column: 0,
-            end_line: 0,
-            end_column: 0,
+            file_path,
+            start_line: start.line,
+            start_column: start.col.0,
+            end_line: end.line,
+            end_column: end.col.0,
         }
     }
 
     pub fn get_string(&self) -> String {
+        if self.file_path.is_empty() {
+            return String::new();
+        }
+
         let file = File::open(&self.file_path).unwrap();
         let reader = BufReader::new(file);
 

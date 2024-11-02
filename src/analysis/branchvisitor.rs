@@ -2,7 +2,6 @@ use super::condition::{
     Arm, BinKind, BinaryCond, BoolCond, Condition, ForCond, MatchCond, MatchKind, Patt, PattKind,
 };
 use super::sourceinfo::SourceInfo;
-use regex::Regex;
 use rustc_ast::BinOpKind;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::ty::{self, TyCtxt, TyKind};
@@ -16,7 +15,6 @@ pub struct BranchVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
     fn_name: String,
     fn_source: SourceInfo,
-    span_re: Regex,
     typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
     source_cond_map: HashMap<SourceInfo, Condition>,
 }
@@ -26,14 +24,12 @@ impl<'tcx> BranchVisitor<'tcx> {
         tcx: TyCtxt<'tcx>,
         fn_name: String,
         fn_source: SourceInfo,
-        span_re: Regex,
         typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
     ) -> Self {
         Self {
             tcx,
             fn_name,
             fn_source,
-            span_re,
             typeck_res,
             source_cond_map: HashMap::new(),
         }
@@ -87,8 +83,8 @@ impl<'tcx> BranchVisitor<'tcx> {
         lexpr: &'tcx rustc_hir::Expr<'tcx>,
         rexpr: &'tcx rustc_hir::Expr<'tcx>,
     ) -> HashMap<SourceInfo, Condition> {
-        let lhs = SourceInfo::from_span(lexpr.span, &self.span_re).get_string();
-        let rhs = SourceInfo::from_span(rexpr.span, &self.span_re).get_string();
+        let lhs = SourceInfo::from_span(lexpr.span, self.tcx.sess.source_map()).get_string();
+        let rhs = SourceInfo::from_span(rexpr.span, self.tcx.sess.source_map()).get_string();
         let cmp_with_int = Self::is_comparable_literal(lexpr) || Self::is_comparable_literal(rexpr);
         let mut map = HashMap::new();
         match op.node {
@@ -120,7 +116,7 @@ impl<'tcx> BranchVisitor<'tcx> {
     }
 
     fn handle_expr(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> HashMap<SourceInfo, Condition> {
-        let expr_source = SourceInfo::from_span(expr.span, &self.span_re);
+        let expr_source = SourceInfo::from_span(expr.span, self.tcx.sess.source_map());
         let expr_str = expr_source.get_string();
         let mut map = HashMap::new();
         match &expr.kind {
@@ -141,8 +137,9 @@ impl<'tcx> BranchVisitor<'tcx> {
             },
             rustc_hir::ExprKind::Let(let_expr) => {
                 let cond = Condition::Bool(BoolCond::Other(expr_str));
-                let pat_source = SourceInfo::from_span(let_expr.pat.span, &self.span_re);
-                map.insert(pat_source, cond);
+                let pat_source =
+                    SourceInfo::from_span(let_expr.pat.span, self.tcx.sess.source_map());
+                map.insert(expr_source, cond);
             }
             rustc_hir::ExprKind::Lit(_) => {
                 // FIXME: handle literals which means determinated conditions
@@ -185,8 +182,9 @@ impl<'tcx> BranchVisitor<'tcx> {
         if let rustc_hir::StmtKind::Expr(expr) = stmt.kind {
             if let rustc_hir::ExprKind::Match(_, arms, match_kind) = expr.kind {
                 assert_eq!(match_kind, rustc_hir::MatchSource::ForLoopDesugar);
-                let var_source = SourceInfo::from_span(arms[1].pat.span, &self.span_re);
-                let range_source = SourceInfo::from_span(expr.span, &self.span_re);
+                let var_source =
+                    SourceInfo::from_span(arms[1].pat.span, self.tcx.sess.source_map());
+                let range_source = SourceInfo::from_span(expr.span, self.tcx.sess.source_map());
                 let cond = Condition::For(ForCond {
                     iter_var: var_source.get_string(),
                     iter_range: range_source.get_string(),
@@ -220,7 +218,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         pat: &'tcx rustc_hir::Pat<'tcx>,
         adt_def: &'tcx rustc_middle::ty::AdtDef<'tcx>,
     ) -> (SourceInfo, Patt) {
-        let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
+        let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         // let pat_ty = self.typeck_res.pat_ty(pat);
         // println!("Type of {} is {:?}", pat_source.get_string(), pat_ty);
@@ -303,7 +301,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         pat: &'tcx rustc_hir::Pat<'tcx>,
         adt_def: &'tcx rustc_middle::ty::AdtDef<'tcx>,
     ) -> (SourceInfo, Patt) {
-        let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
+        let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         let pat_kind = self.resolve_pat_kind(pat);
         match pat_kind {
@@ -373,7 +371,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                         index,
                         (
                             mir_const,
-                            SourceInfo::from_span(field.pat.span, &self.span_re),
+                            SourceInfo::from_span(field.pat.span, self.tcx.sess.source_map()),
                         ),
                     );
                 }
@@ -446,7 +444,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                     }
                     lit_map.insert(
                         index,
-                        (mir_const, SourceInfo::from_span(field.span, &self.span_re)),
+                        (
+                            mir_const,
+                            SourceInfo::from_span(field.span, self.tcx.sess.source_map()),
+                        ),
                     );
                     index += 1;
                 }
@@ -468,7 +469,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         adt_def: &'tcx rustc_middle::ty::AdtDef<'tcx>,
     ) -> HashMap<SourceInfo, Patt> {
         let mut map = HashMap::new();
-        let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
+        let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         // let pat_ty = self.typeck_res.pat_ty(pat);
         // println!("Type of {} is {:?}", pat_source.get_string(), pat_ty);
@@ -506,7 +507,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         tuple_def: &'tcx [rustc_middle::ty::Ty<'tcx>],
     ) -> HashMap<SourceInfo, Patt> {
         let mut map = HashMap::new();
-        let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
+        let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         let pat_kind = self.resolve_pat_kind(pat);
         match pat_kind {
@@ -578,7 +579,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                     }
                     lit_map.insert(
                         index,
-                        (mir_const, SourceInfo::from_span(field.span, &self.span_re)),
+                        (
+                            mir_const,
+                            SourceInfo::from_span(field.span, self.tcx.sess.source_map()),
+                        ),
                     );
                     index += 1;
                 }
@@ -604,7 +608,7 @@ impl<'tcx> BranchVisitor<'tcx> {
 
     fn handle_other_pat(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> HashMap<SourceInfo, Patt> {
         let mut map = HashMap::new();
-        let pat_source = SourceInfo::from_span(pat.span, &self.span_re);
+        let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         let pat_kind = self.resolve_pat_kind(pat);
         match pat_kind {
             rustc_hir::PatKind::Or(subpats) => {
@@ -690,7 +694,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         expr: &'tcx rustc_hir::Expr<'tcx>,
         arms: &'tcx [rustc_hir::Arm<'tcx>],
     ) {
-        let match_source = SourceInfo::from_span(expr.span, &self.span_re);
+        let match_source = SourceInfo::from_span(expr.span, self.tcx.sess.source_map());
         let expr_ty = self.typeck_res.expr_ty(expr);
         let expr_ty = self.resolve_match_type(expr_ty.kind());
         let mut cond;
@@ -723,7 +727,8 @@ impl<'tcx> BranchVisitor<'tcx> {
                         self.source_cond_map.extend(cond_map.clone());
                         guard_map = Some(cond_map);
                     }
-                    let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
+                    let body_source =
+                        SourceInfo::from_span(arm.body.span, self.tcx.sess.source_map());
                     let mut source_wrapper = None;
                     if self.fn_source.contains(&body_source) {
                         source_wrapper = Some(body_source);
@@ -748,7 +753,8 @@ impl<'tcx> BranchVisitor<'tcx> {
                         self.source_cond_map.extend(cond_map.clone());
                         guard_map = Some(cond_map);
                     }
-                    let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
+                    let body_source =
+                        SourceInfo::from_span(arm.body.span, self.tcx.sess.source_map());
                     let mut source_wrapper = None;
                     if self.fn_source.contains(&body_source) {
                         source_wrapper = Some(body_source);
@@ -773,7 +779,8 @@ impl<'tcx> BranchVisitor<'tcx> {
                         self.source_cond_map.extend(cond_map.clone());
                         guard_map = Some(cond_map);
                     }
-                    let body_source = SourceInfo::from_span(arm.body.span, &self.span_re);
+                    let body_source =
+                        SourceInfo::from_span(arm.body.span, self.tcx.sess.source_map());
                     let mut source_wrapper = None;
                     if self.fn_source.contains(&body_source) {
                         source_wrapper = Some(body_source);
@@ -794,7 +801,7 @@ impl<'tcx> BranchVisitor<'tcx> {
     }
 
     fn handle_try(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
-        let try_source = SourceInfo::from_span(expr.span, &self.span_re);
+        let try_source = SourceInfo::from_span(expr.span, self.tcx.sess.source_map());
         let cond = Condition::Bool(BoolCond::Other(try_source.get_string()));
         self.source_cond_map.insert(try_source, cond);
     }
@@ -816,6 +823,7 @@ impl<'tcx> Visitor<'tcx> for BranchVisitor<'tcx> {
                 rustc_hir::MatchSource::TryDesugar(_) => self.handle_try(expr),
                 _ => {}
             },
+            // FIXME: handle other boolean expressions
             _ => {}
         }
         intravisit::walk_expr(self, ex);

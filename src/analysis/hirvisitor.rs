@@ -5,6 +5,7 @@ use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{self, BodyId, FnDecl};
 use rustc_middle::hir::map::Map;
 use rustc_middle::hir::nested_filter;
+use rustc_middle::mir::BasicBlocks;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::symbol::sym;
 use std::collections::HashMap;
@@ -14,31 +15,19 @@ use std::io::Write;
 pub struct HirVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
     hir_map: Map<'tcx>,
-    span_re: regex::Regex,
-    result: Vec<(
-        String,
-        rustc_middle::mir::BasicBlocks<'tcx>,
-        HashMap<SourceInfo, Condition>,
-    )>,
+    result: Vec<(String, SourceInfo, BasicBlocks<'tcx>, HashMap<SourceInfo, Condition>)>,
 }
 
 impl<'tcx> HirVisitor<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, hir_map: Map<'tcx>, span_re: regex::Regex) -> Self {
+    pub fn new(tcx: TyCtxt<'tcx>, hir_map: Map<'tcx>) -> Self {
         HirVisitor {
             tcx,
             hir_map,
-            span_re,
             result: Vec::new(),
         }
     }
 
-    pub fn move_result(
-        self,
-    ) -> Vec<(
-        String,
-        rustc_middle::mir::BasicBlocks<'tcx>,
-        HashMap<SourceInfo, Condition>,
-    )> {
+    pub fn move_result(self) -> Vec<(String, SourceInfo, BasicBlocks<'tcx>, HashMap<SourceInfo, Condition>)> {
         self.result
     }
 }
@@ -58,11 +47,6 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         span: rustc_span::Span,
         id: rustc_hir::def_id::LocalDefId,
     ) -> Self::Result {
-        let source_map = self.tcx.sess.source_map();
-        let lo = source_map.lookup_char_pos(span.lo());
-        let hi = source_map.lookup_char_pos(span.hi());
-        println!("fn: {:?} at {:?} {:?}", id, lo, hi);
-
         let parent_id = self.tcx.parent_hir_id(b.hir_id);
         let parent_id = self.tcx.parent_hir_id(parent_id);
         let attrs = self.hir_map.attrs(parent_id);
@@ -88,19 +72,18 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         file.write_all(buf.as_bytes()).unwrap();
 
         // tranverse HIR
-        let fn_source = SourceInfo::from_span(span, &self.span_re);
+        let fn_source = SourceInfo::from_span(span, self.tcx.sess.source_map());
         let mut visitor = BranchVisitor::new(
             self.tcx,
             fn_name.clone(),
-            fn_source,
-            self.span_re.clone(),
+            fn_source.clone(),
             self.tcx.typeck(hir.id().hir_id.owner),
         );
         intravisit::walk_body::<BranchVisitor>(&mut visitor, &hir);
         visitor.output_map();
 
         self.result
-            .push((fn_name, mir.basic_blocks.clone(), visitor.move_map()));
+            .push((fn_name, fn_source, mir.basic_blocks.clone(), visitor.move_map()));
 
         // intravisit::walk_fn(self, fk, fd, b, id);
     }

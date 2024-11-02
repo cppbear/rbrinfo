@@ -6,7 +6,6 @@ use petgraph::dot::Config;
 use petgraph::dot::Dot;
 use petgraph::graph::DiGraph;
 use petgraph::prelude::*;
-use regex::Regex;
 use rustc_data_structures::graph::dominators::Dominators;
 use rustc_data_structures::graph::StartNode;
 use rustc_driver::Compilation;
@@ -16,6 +15,7 @@ use rustc_middle::mir::{BasicBlock, Operand};
 use rustc_middle::mir::{Statement, SwitchTargets};
 use rustc_middle::mir::{Terminator, TerminatorKind};
 use rustc_middle::ty::TyCtxt;
+use rustc_span::source_map::SourceMap;
 use rustc_span::Span;
 use simplelog::{ColorChoice, ConfigBuilder, LevelFilter, TermLogger, TerminalMode};
 use std::collections::{HashMap, HashSet};
@@ -26,7 +26,6 @@ use time::UtcOffset;
 pub struct MirCheckerCallbacks {
     pub analysis_options: AnalysisOption,
     pub source_name: String,
-    span_re: Regex,
     cond_map: HashMap<SourceInfo, Condition>,
 }
 
@@ -35,7 +34,6 @@ impl MirCheckerCallbacks {
         Self {
             analysis_options: options,
             source_name: String::new(),
-            span_re: Regex::new(r"^(.*?):(\d+):(\d+): (\d+):(\d+)").unwrap(),
             cond_map: HashMap::new(),
         }
     }
@@ -112,22 +110,6 @@ impl DFSCxt {
     }
 }
 
-// fn find_second_last_index<T: PartialEq>(vec: &[T], target: T) -> Option<usize> {
-//     let mut count = 0;
-//     let len = vec.len();
-
-//     for i in (0..len).rev() {
-//         if vec[i] == target {
-//             count += 1;
-//             if count == 2 {
-//                 return Some(i);
-//             }
-//         }
-//     }
-
-//     None
-// }
-
 fn count_subsequence<T: PartialEq>(vec: &Vec<T>, subseq: &Vec<T>) -> usize {
     if subseq.is_empty() || vec.len() < subseq.len() {
         return 0;
@@ -159,20 +141,23 @@ fn remove_subsequence<T: PartialEq>(vec: &mut Vec<T>, subseq: &Vec<T>) {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct FnBlocks<'a> {
     fn_name: String,
+    fn_source: SourceInfo,
     start_node: BasicBlock,
     blocks: Vec<MyBlock<'a>>,
     dominators: Dominators<BasicBlock>,
     cond_chains: Vec<(Vec<(String, String)>, Vec<BasicBlock>)>,
-    re: Regex,
+    source_map: &'a SourceMap,
     cond_map: HashMap<SourceInfo, Condition>,
 }
 
 impl FnBlocks<'_> {
+    const MAX_CONDITIONS: usize = 9999;
+
     fn get_source_info(&self, span: rustc_span::Span) -> SourceInfo {
-        SourceInfo::from_span(span, &self.re)
+        SourceInfo::from_span(span, self.source_map)
     }
 
     fn get_matched_cond(
@@ -268,6 +253,7 @@ impl FnBlocks<'_> {
         if let Some(pat_sources) = arm_source {
             // Span of Terminator points to a arm pattern
             error!("Span of Terminator for Enum points to an arm pattern, this is NOT common. Check {:?}", block_name);
+            // FIXME: handle matches! macro
             assert_eq!(pat_sources.len(), 1);
             let arm = match_cond.arms.get(&pat_sources[0]).unwrap();
             // common branches
@@ -1146,7 +1132,7 @@ impl FnBlocks<'_> {
         }
     }
 
-    fn handle_switchint_alt(
+    fn handle_switchint(
         &self,
         stack: &mut Vec<DFSCxt>,
         dfs_cxt: &DFSCxt,
@@ -1386,48 +1372,49 @@ impl FnBlocks<'_> {
                 }
             }
         } else {
-            error!("No matched condition found for {:?}", cond_source);
-            return;
-            // // common branches
-            // for (_, target) in targets.iter() {
-            //     let mut branches = branches.clone();
-            //     if branches.insert((block_name, target)) {
-            //         let mut path = path.clone();
-            //         let conds = conds.clone();
+            if self.fn_source.contains(&cond_source) {
+                error!("No matched condition found for {:?}", cond_source);
+            }
+            // common branches
+            for (_, target) in targets.iter() {
+                let mut branches = branches.clone();
+                if branches.insert((block_name, target)) {
+                    let mut path = path.clone();
+                    let conds = conds.clone();
 
-            //         path.push(target);
-            //         stack.push(DFSCxt::new(
-            //             target,
-            //             path,
-            //             conds,
-            //             branches,
-            //             loop_paths.clone(),
-            //         ));
-            //     }
-            // }
-            // // otherwise branch
-            // let mut branches = branches.clone();
-            // if !matches!(
-            //     self.blocks[targets.otherwise().index()].terminator.kind,
-            //     TerminatorKind::Unreachable
-            // ) && branches.insert((block_name, targets.otherwise()))
-            // {
-            //     let mut path = path.clone();
-            //     let conds = conds.clone();
+                    path.push(target);
+                    stack.push(DFSCxt::new(
+                        target,
+                        path,
+                        conds,
+                        branches,
+                        loop_paths.clone(),
+                    ));
+                }
+            }
+            // otherwise branch
+            let mut branches = branches.clone();
+            if !matches!(
+                self.blocks[targets.otherwise().index()].terminator.kind,
+                TerminatorKind::Unreachable
+            ) && branches.insert((block_name, targets.otherwise()))
+            {
+                let mut path = path.clone();
+                let conds = conds.clone();
 
-            //     path.push(targets.otherwise());
-            //     stack.push(DFSCxt::new(
-            //         targets.otherwise(),
-            //         path,
-            //         conds,
-            //         branches,
-            //         loop_paths.clone(),
-            //     ));
-            // }
+                path.push(targets.otherwise());
+                stack.push(DFSCxt::new(
+                    targets.otherwise(),
+                    path,
+                    conds,
+                    branches,
+                    loop_paths.clone(),
+                ));
+            }
         }
     }
 
-    fn iterative_dfs(&mut self) {
+    fn iterative_dfs(&mut self) -> bool {
         let mut stack: Vec<DFSCxt> = Vec::new();
         let dfs_cxt = DFSCxt::new(
             self.start_node,
@@ -1437,7 +1424,6 @@ impl FnBlocks<'_> {
             Vec::new(),
         );
         stack.push(dfs_cxt);
-        // let mut cond_chains: Vec<(Vec<(String, String)>, Vec<BasicBlock>)> = Vec::new();
         while !stack.is_empty() {
             let mut dfs_cxt = stack.pop().unwrap();
             let DFSCxt {
@@ -1448,7 +1434,6 @@ impl FnBlocks<'_> {
                 loop_paths,
             } = &mut dfs_cxt;
             let block_index = block.index();
-
             let block = &self.blocks[block_index];
 
             // Check if a loop path is duplicated
@@ -1477,15 +1462,16 @@ impl FnBlocks<'_> {
 
             // extract the condition
             if block.suc_blocks.is_empty() {
-                // continue;
-                // println!("Final Conds: {:?}", conds);
-                // println!("Final Path: {:?}", path);
                 self.cond_chains.push((conds.clone(), path.clone()));
+                if self.cond_chains.len() > Self::MAX_CONDITIONS {
+                    error!("Too many condition chains");
+                    return false;
+                }
             } else {
                 let ter_source = block.terminator.source_info;
                 match &block.terminator.kind {
                     TerminatorKind::SwitchInt { discr, targets } => {
-                        self.handle_switchint_alt(
+                        self.handle_switchint(
                             &mut stack,
                             &dfs_cxt,
                             ter_source.span,
@@ -1546,44 +1532,8 @@ impl FnBlocks<'_> {
             }
         }
 
-        /*
-        let mut chain_id = 0;
-        let mut chains_str = String::from("\n");
-        for (conds, path) in &cond_chains {
-            chains_str += &format!("CondChain {}\n", chain_id);
-            let mut cond_iter = 0;
-            for (cond, value) in conds {
-                if cond_iter == 0 {
-                    chains_str += &format!("{} is {}", cond, value);
-                } else {
-                    chains_str += &format!(" -> {} is {}", cond, value);
-                }
-                cond_iter += 1;
-            }
-            chains_str += "\n";
-            let mut path_iter = 0;
-            for block in path {
-                if path_iter == 0 {
-                    chains_str += &format!("{:?}", block);
-                } else {
-                    chains_str += &format!(" -> {:?}", block);
-                }
-                path_iter += 1;
-            }
-            chains_str += "\n";
-            if chain_id != cond_chains.len() - 1 {
-                chains_str += "\n";
-            }
-            chain_id += 1;
-        }
-        println!("{}", chains_str);
-         */
-        // self.dump_to_json(&cond_chains);
+        true
     }
-
-    // fn get_cond_chains(&self) -> &Vec<(Vec<(String, String)>, Vec<BasicBlock>)> {
-    //     &self.cond_chains
-    // }
 
     fn chains_to_json(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut json_map = serde_json::Map::new();
@@ -1647,12 +1597,12 @@ impl MirCheckerCallbacks {
         .unwrap();
 
         let hir_map = tcx.hir();
-        let mut visitor = HirVisitor::new(tcx, hir_map, self.span_re.clone());
+        let mut visitor = HirVisitor::new(tcx, hir_map);
         hir_map.visit_all_item_likes_in_crate(&mut visitor);
         let result = visitor.move_result();
 
         let mut ret: Vec<FnBlocks> = vec![];
-        for (fn_name, basic_blocks, cond_map) in result {
+        for (fn_name, fn_source, basic_blocks, cond_map) in result {
             let mut fn_blocks: Vec<MyBlock> = vec![];
             let blocks: &rustc_middle::mir::BasicBlocks<'_> = &basic_blocks;
             let pre_blocks = blocks.predecessors();
@@ -1682,11 +1632,12 @@ impl MirCheckerCallbacks {
             }
             let a_fn_block = FnBlocks {
                 fn_name,
+                fn_source,
                 start_node: blocks.start_node(),
                 blocks: fn_blocks,
                 dominators: blocks.dominators().clone(),
                 cond_chains: vec![],
-                re: self.span_re.clone(),
+                source_map: tcx.sess.source_map(),
                 cond_map: cond_map.clone(),
             };
             ret.push(a_fn_block);
@@ -1698,8 +1649,13 @@ impl MirCheckerCallbacks {
             info!("Start analysis for {:?}", block.fn_name);
             block.mir_out();
             block.dump_cfg_to_dot();
-            block.iterative_dfs();
-            cond_chains.insert(block.fn_name.clone(), serde_json::json!(block.chains_to_json()));
+            let result = block.iterative_dfs();
+            if result {
+                cond_chains.insert(
+                    block.fn_name.clone(),
+                    serde_json::json!(block.chains_to_json()),
+                );
+            }
         }
 
         let dir_path = "./rbrinfo";
