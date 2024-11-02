@@ -174,6 +174,7 @@ fn in_cargo_mir_checker() {
         // this target.  The user gets to control what gets actually passed to mir-checker.
         let mut cmd = cargo();
         cmd.arg("check"); // using `check` may speed up the analysis than using `rustc`
+        println!("{:?}", kind);
         match kind.as_str() {
             "bin" => {
                 cmd.arg("--bin").arg(target.name);
