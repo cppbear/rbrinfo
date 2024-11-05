@@ -210,10 +210,12 @@ impl FnBlocks<'_> {
             let mut i = 0;
             for statement in &block.statements {
                 mir_str.push_str(&format!("  {}: {:?}\n", i, statement));
-                mir_str.push_str(&format!("    {:?}\n", statement.source_info.span));
+                let stmt_source = self.get_source_info(statement.source_info.span);
+                mir_str.push_str(&format!("    {:?}\n", stmt_source));
                 i = i + 1;
             }
-            let formatted = format!("{:#?}\n", block.terminator);
+            let ter_source = self.get_source_info(block.terminator.source_info.span);
+            let formatted = format!("Terminator {{\n    source_info: {:?}\n    kind: {:#?}\n}}\n", ter_source, block.terminator.kind);
             let spaces = " ".repeat(2);
             let ternimator: String = formatted
                 .lines()
@@ -1330,8 +1332,8 @@ impl FnBlocks<'_> {
                             let mut conds = conds.clone();
 
                             let value_str = match value {
-                                0 => "Ok",
-                                1 => "Err",
+                                0 => "Ok/Some",
+                                1 => "Err/None",
                                 _ => panic!("Invalid value"),
                             };
                             conds.push((try_str.clone(), value_str.to_string()));
@@ -1533,7 +1535,7 @@ impl FnBlocks<'_> {
         true
     }
 
-    fn chains_to_json(&self) -> serde_json::Map<String, serde_json::Value> {
+    fn dump_to_json(&self) {
         let mut json_map = serde_json::Map::new();
         let mut id = 1;
         for (conds, path) in &self.cond_chains {
@@ -1547,7 +1549,13 @@ impl FnBlocks<'_> {
             json_map.insert(chain_id, serde_json::json!(chain_map));
             id += 1;
         }
-        json_map
+
+        let dir_path = "./rbrinfo/cond_chains";
+        let file_path = format!("{}/{}.json", dir_path, self.fn_name);
+        fs::create_dir_all(dir_path).unwrap();
+        let json = serde_json::to_string_pretty(&json_map).unwrap();
+        let mut file = File::create(file_path).unwrap();
+        file.write_all(json.as_bytes()).unwrap();
     }
 
     fn dump_cfg_to_dot(&self) {
@@ -1628,26 +1636,14 @@ impl MirCheckerCallbacks {
             ret.push(a_fn_block);
         }
 
-        let mut cond_chains = serde_json::Map::new();
-
         for mut block in ret {
             info!("Start analysis for {:?}", block.fn_name);
             block.mir_out();
             block.dump_cfg_to_dot();
             let result = block.iterative_dfs();
             if result {
-                cond_chains.insert(
-                    block.fn_name.clone(),
-                    serde_json::json!(block.chains_to_json()),
-                );
+                block.dump_to_json();
             }
         }
-
-        let dir_path = "./rbrinfo";
-        let file_path = format!("{}/cond_chains.json", dir_path);
-        fs::create_dir_all(dir_path).unwrap();
-        let json = serde_json::to_string_pretty(&cond_chains).unwrap();
-        let mut file = File::create(file_path).unwrap();
-        file.write_all(json.as_bytes()).unwrap();
     }
 }

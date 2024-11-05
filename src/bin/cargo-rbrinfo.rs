@@ -196,7 +196,7 @@ fn in_cargo_mir_checker() {
             "bin" => {
                 cmd.arg("--bin").arg(target.name);
             }
-            "lib" => {
+            "lib" | "cdylib" => {
                 cmd.arg("--lib");
             }
             _ => continue,

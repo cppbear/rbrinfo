@@ -159,24 +159,6 @@ impl MatchCond {
             arms: HashMap::new(),
         }
     }
-
-    // pub fn add_arm(
-    //     &mut self,
-    //     pat_source: SourceInfo,
-    //     pat_str: String,
-    //     kind: PattKind,
-    //     body_source: Option<SourceInfo>,
-    // ) {
-    //     self.arms.insert(
-    //         pat_source,
-    //         Arm {
-    //             pat_str,
-    //             kind,
-    //             guard: None,
-    //             body_source,
-    //         },
-    //     );
-    // }
 }
 
 impl MatchCond {
