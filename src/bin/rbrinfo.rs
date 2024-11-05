@@ -8,15 +8,16 @@ extern crate rustc_middle;
 extern crate rustc_session;
 
 use log::info;
-
 use rbrinfo::analysis::option;
 use rbrinfo::{analysis, utils};
 use rustc_errors::emitter::HumanReadableErrorType;
 use rustc_errors::ColorConfig;
 use rustc_session::config::ErrorOutputType;
 use rustc_session::EarlyDiagCtxt;
+use simplelog::{ColorChoice, ConfigBuilder, LevelFilter, TermLogger, TerminalMode};
 use std::env;
 use std::process;
+use time::UtcOffset;
 
 /// Exit status code used for successful compilation and help output.
 pub const EXIT_SUCCESS: i32 = 0;
@@ -25,6 +26,19 @@ pub const EXIT_SUCCESS: i32 = 0;
 pub const EXIT_FAILURE: i32 = 1;
 
 fn main() {
+    let time_offset = UtcOffset::from_hms(8, 0, 0).unwrap(); // Set time zone to UTC+8
+    let log_config = ConfigBuilder::new()
+        .set_location_level(LevelFilter::Error)
+        .set_time_offset(time_offset)
+        .build();
+    TermLogger::init(
+        LevelFilter::Info,
+        log_config,
+        TerminalMode::Mixed,
+        ColorChoice::Auto,
+    )
+    .unwrap();
+
     let result = rustc_driver::catch_fatal_errors(move || {
         let mut rustc_args = env::args_os()
             .enumerate()

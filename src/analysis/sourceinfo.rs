@@ -1,9 +1,8 @@
+use rustc_span::source_map::SourceMap;
+use rustc_span::FileName;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-
-use rustc_span::source_map::SourceMap;
-use rustc_span::{FileName, RealFileName};
 
 #[derive(Clone, Hash, PartialEq, PartialOrd, Eq, Ord)]
 pub struct SourceInfo {
@@ -32,9 +31,9 @@ impl SourceInfo {
         SourceInfo {
             file_path,
             start_line: start.line,
-            start_column: start.col.0,
+            start_column: start.col.0 + 1,
             end_line: end.line,
-            end_column: end.col.0,
+            end_column: end.col.0 + 1,
         }
     }
 

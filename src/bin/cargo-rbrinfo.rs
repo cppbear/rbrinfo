@@ -1,8 +1,11 @@
+use log::info;
 use rbrinfo::utils;
 use serde_json;
+use simplelog::{ColorChoice, ConfigBuilder, LevelFilter, TermLogger, TerminalMode};
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
+use time::UtcOffset;
 
 const CARGO_RBRINFO_HELP: &str = r#"Static analysis tool for Rust programs
 
@@ -115,6 +118,19 @@ fn cargo() -> Command {
 }
 
 fn main() {
+    let time_offset = UtcOffset::from_hms(8, 0, 0).unwrap(); // Set time zone to UTC+8
+    let log_config = ConfigBuilder::new()
+        .set_location_level(LevelFilter::Error)
+        .set_time_offset(time_offset)
+        .build();
+    TermLogger::init(
+        LevelFilter::Info,
+        log_config,
+        TerminalMode::Mixed,
+        ColorChoice::Auto,
+    )
+    .unwrap();
+
     // Check for version and help flags even when invoked as `cargo-mir-checker`.
     if std::env::args().any(|a| a == "--help" || a == "-h") {
         show_help();
@@ -174,8 +190,9 @@ fn in_cargo_mir_checker() {
         // this target.  The user gets to control what gets actually passed to mir-checker.
         let mut cmd = cargo();
         cmd.arg("check"); // using `check` may speed up the analysis than using `rustc`
-        println!("{:?}", kind);
+        info!("Kind of target {:?} is: {}.", target.name, kind);
         match kind.as_str() {
+            // FIXME: handle more target kinds
             "bin" => {
                 cmd.arg("--bin").arg(target.name);
             }

@@ -17,16 +17,14 @@ use rustc_middle::mir::{Terminator, TerminatorKind};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::source_map::SourceMap;
 use rustc_span::Span;
-use simplelog::{ColorChoice, ConfigBuilder, LevelFilter, TermLogger, TerminalMode};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
-use time::UtcOffset;
 
 pub struct MirCheckerCallbacks {
     pub analysis_options: AnalysisOption,
     pub source_name: String,
-    cond_map: HashMap<SourceInfo, Condition>,
+    // cond_map: HashMap<SourceInfo, Condition>,
 }
 
 impl MirCheckerCallbacks {
@@ -34,7 +32,7 @@ impl MirCheckerCallbacks {
         Self {
             analysis_options: options,
             source_name: String::new(),
-            cond_map: HashMap::new(),
+            // cond_map: HashMap::new(),
         }
     }
 }
@@ -1583,19 +1581,6 @@ impl FnBlocks<'_> {
 
 impl MirCheckerCallbacks {
     fn run_analysis<'tcx, 'compiler>(&mut self, tcx: TyCtxt<'tcx>) {
-        let time_offset = UtcOffset::from_hms(8, 0, 0).unwrap(); // Set time zone to UTC+8
-        let log_config = ConfigBuilder::new()
-            .set_location_level(LevelFilter::Error)
-            .set_time_offset(time_offset)
-            .build();
-        TermLogger::init(
-            LevelFilter::Info,
-            log_config,
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
-        )
-        .unwrap();
-
         let hir_map = tcx.hir();
         let mut visitor = HirVisitor::new(tcx, hir_map);
         hir_map.visit_all_item_likes_in_crate(&mut visitor);
