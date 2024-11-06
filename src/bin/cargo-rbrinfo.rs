@@ -192,11 +192,10 @@ fn in_cargo_mir_checker() {
         cmd.arg("check"); // using `check` may speed up the analysis than using `rustc`
         info!("Kind of target {:?} is: {}.", target.name, kind);
         match kind.as_str() {
-            // FIXME: handle more target kinds
             "bin" => {
                 cmd.arg("--bin").arg(target.name);
             }
-            "lib" | "cdylib" => {
+            "lib" => {
                 cmd.arg("--lib");
             }
             _ => continue,

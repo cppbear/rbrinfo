@@ -1334,7 +1334,7 @@ impl FnBlocks<'_> {
                             let value_str = match value {
                                 0 => "Ok/Some",
                                 1 => "Err/None",
-                                _ => panic!("Invalid value"),
+                                _ => panic!("Invalid value. Check {:?}", block_name),
                             };
                             conds.push((try_str.clone(), value_str.to_string()));
 

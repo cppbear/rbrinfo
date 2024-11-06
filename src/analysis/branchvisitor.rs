@@ -7,7 +7,7 @@ use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::ty::{self, TyCtxt, TyKind};
 use rustc_span::source_map::Spanned;
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 
@@ -260,6 +260,29 @@ impl<'tcx> BranchVisitor<'tcx> {
                             panic!("path.res is: {:?}", path.res);
                         }
                     }
+                }
+                rustc_hir::QPath::TypeRelative(
+                    rustc_hir::Ty {
+                        kind:
+                            rustc_hir::TyKind::Path(rustc_hir::QPath::Resolved(
+                                _,
+                                rustc_hir::Path {
+                                    res: rustc_hir::def::Res::SelfTyAlias { .. },
+                                    ..
+                                },
+                            )),
+                        ..
+                    },
+                    path_seg,
+                ) => {
+                    let ident = path_seg.ident;
+                    let variant_index = adt_def
+                        .variants().iter().position(|variant| variant.ident(self.tcx) == ident).unwrap();
+                    let patt = Patt {
+                        pat_str: pat_source.get_string(),
+                        kind: PattKind::Enum(variant_index),
+                    };
+                    (pat_source, patt)
                 }
                 _ => {
                     panic!("qpath is: {:?}", qpath);
