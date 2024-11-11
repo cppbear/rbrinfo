@@ -123,7 +123,7 @@ pub struct Patt {
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Arm {
     pub pat: Patt,
-    pub guard: Option<HashMap<SourceInfo, Condition>>,
+    pub guard: Option<HashMap<SourceInfo, Vec<Condition>>>,
     pub body_source: Option<SourceInfo>,
 }
 
@@ -146,14 +146,16 @@ impl MatchKind {
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct MatchCond {
+    pub match_source: SourceInfo,
     pub match_str: String,
     pub match_kind: MatchKind,
     pub arms: HashMap<SourceInfo, Arm>,
 }
 
 impl MatchCond {
-    pub fn new(match_str: String, match_kind: MatchKind) -> Self {
+    pub fn new(match_source: SourceInfo, match_str: String,  match_kind: MatchKind) -> Self {
         Self {
+            match_source,
             match_str,
             match_kind,
             arms: HashMap::new(),

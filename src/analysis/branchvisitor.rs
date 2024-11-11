@@ -7,7 +7,7 @@ use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::ty::{self, TyCtxt, TyKind};
 use rustc_span::source_map::Spanned;
 use serde_json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 
@@ -16,7 +16,7 @@ pub struct BranchVisitor<'tcx> {
     fn_name: String,
     fn_source: SourceInfo,
     typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
-    source_cond_map: HashMap<SourceInfo, Condition>,
+    source_cond_map: HashMap<SourceInfo, Vec<Condition>>,
 }
 
 impl<'tcx> BranchVisitor<'tcx> {
@@ -44,7 +44,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         file.write_all(json.as_bytes()).unwrap();
     }
 
-    pub fn move_map(self) -> HashMap<SourceInfo, Condition> {
+    pub fn move_map(self) -> HashMap<SourceInfo, Vec<Condition>> {
         self.source_cond_map
     }
 
@@ -82,7 +82,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         expr_source: SourceInfo,
         lexpr: &'tcx rustc_hir::Expr<'tcx>,
         rexpr: &'tcx rustc_hir::Expr<'tcx>,
-    ) -> HashMap<SourceInfo, Condition> {
+    ) -> HashMap<SourceInfo, Vec<Condition>> {
         let lhs = SourceInfo::from_span(lexpr.span, self.tcx.sess.source_map()).get_string();
         let rhs = SourceInfo::from_span(rexpr.span, self.tcx.sess.source_map()).get_string();
         let cmp_with_int = Self::is_comparable_literal(lexpr) || Self::is_comparable_literal(rexpr);
@@ -109,13 +109,21 @@ impl<'tcx> BranchVisitor<'tcx> {
                     rhs,
                     cmp_with_int,
                 }));
-                map.insert(expr_source, cond);
+                if map.contains_key(&expr_source) {
+                    warn!("Duplicated condition for Binary: {:?}", expr_source);
+                    map.get_mut(&expr_source).unwrap().push(cond);
+                } else {
+                    map.insert(expr_source, vec![cond]);
+                }
             }
         }
         map
     }
 
-    fn handle_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) -> HashMap<SourceInfo, Condition> {
+    fn handle_expr(
+        &mut self,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> HashMap<SourceInfo, Vec<Condition>> {
         let expr_source = SourceInfo::from_span(expr.span, self.tcx.sess.source_map());
         let expr_str = expr_source.get_string();
         let mut map = HashMap::new();
@@ -132,33 +140,68 @@ impl<'tcx> BranchVisitor<'tcx> {
                 }
                 _ => {
                     let cond = Condition::Bool(BoolCond::Other(expr_str));
-                    map.insert(expr_source, cond);
+                    if map.contains_key(&expr_source) {
+                        warn!("Duplicated condition for Unary: {:?}", expr_source);
+                        map.get_mut(&expr_source).unwrap().push(cond);
+                    } else {
+                        map.insert(expr_source, vec![cond]);
+                    }
                 }
             },
             rustc_hir::ExprKind::Let(_) => {
                 let cond = Condition::Bool(BoolCond::Other(expr_str));
-                map.insert(expr_source, cond);
+                if map.contains_key(&expr_source) {
+                    warn!("Duplicated condition for Let: {:?}", expr_source);
+                    map.get_mut(&expr_source).unwrap().push(cond);
+                } else {
+                    map.insert(expr_source, vec![cond]);
+                }
             }
             rustc_hir::ExprKind::Lit(_) => {
                 // FIXME: handle literals which means determinated conditions
                 let cond = Condition::Bool(BoolCond::Other(expr_str));
-                map.insert(expr_source, cond);
+                if map.contains_key(&expr_source) {
+                    warn!("Duplicated condition for Lit: {:?}", expr_source);
+                    map.get_mut(&expr_source).unwrap().push(cond);
+                } else {
+                    map.insert(expr_source, vec![cond]);
+                }
             }
             rustc_hir::ExprKind::MethodCall(_, _, _, _) => {
                 let cond = Condition::Bool(BoolCond::Other(expr_str));
-                map.insert(expr_source, cond);
+                if map.contains_key(&expr_source) {
+                    warn!("Duplicated condition for MethodCall: {:?}", expr_source);
+                    map.get_mut(&expr_source).unwrap().push(cond);
+                } else {
+                    map.insert(expr_source, vec![cond]);
+                }
             }
             rustc_hir::ExprKind::Call(_, _) => {
                 let cond = Condition::Bool(BoolCond::Other(expr_str));
-                map.insert(expr_source, cond);
+                if map.contains_key(&expr_source) {
+                    warn!("Duplicated condition for Call: {:?}", expr_source);
+                    map.get_mut(&expr_source).unwrap().push(cond);
+                } else {
+                    map.insert(expr_source, vec![cond]);
+                }
             }
             rustc_hir::ExprKind::Path(_) => {
                 let cond = Condition::Bool(BoolCond::Other(expr_str));
-                map.insert(expr_source, cond);
+                if map.contains_key(&expr_source) {
+                    warn!("Duplicated condition for Path: {:?}", expr_source);
+                    map.get_mut(&expr_source).unwrap().push(cond);
+                } else {
+                    map.insert(expr_source, vec![cond]);
+                }
             }
             rustc_hir::ExprKind::Block(_, _) => {
                 let cond = Condition::Bool(BoolCond::Other(expr_str));
-                map.insert(expr_source, cond);
+                if map.contains_key(&expr_source) {
+                    warn!("Duplicated condition for Block: {:?}", expr_source);
+                    map.get_mut(&expr_source).unwrap().push(cond);
+                } else {
+                    map.insert(expr_source, vec![cond]);
+                }
             }
             rustc_hir::ExprKind::Match(expr, arms, match_kind) => {
                 let cond_source = Some(expr_source.clone());
@@ -170,7 +213,12 @@ impl<'tcx> BranchVisitor<'tcx> {
             }
             rustc_hir::ExprKind::Field(_, _) => {
                 let cond = Condition::Bool(BoolCond::Other(expr_str));
-                map.insert(expr_source, cond);
+                if map.contains_key(&expr_source) {
+                    warn!("Duplicated condition for Field: {:?}", expr_source);
+                    map.get_mut(&expr_source).unwrap().push(cond);
+                } else {
+                    map.insert(expr_source, vec![cond]);
+                }
             }
             _ => {
                 panic!("Unsupported expression kind: {:?}", expr.kind);
@@ -191,7 +239,15 @@ impl<'tcx> BranchVisitor<'tcx> {
                     iter_var: var_source.get_string(),
                     iter_range: range_source.get_string(),
                 });
-                self.source_cond_map.insert(range_source, cond);
+                if self.source_cond_map.contains_key(&range_source) {
+                    warn!("Duplicated condition for ForLoop: {:?}", range_source);
+                    self.source_cond_map
+                        .get_mut(&range_source)
+                        .unwrap()
+                        .push(cond);
+                } else {
+                    self.source_cond_map.insert(range_source, vec![cond]);
+                }
             } else {
                 panic!(
                     "The ExprKind of the first stmt in ForLoop is {:?}.",
@@ -277,7 +333,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                 ) => {
                     let ident = path_seg.ident;
                     let variant_index = adt_def
-                        .variants().iter().position(|variant| variant.ident(self.tcx) == ident).unwrap();
+                        .variants()
+                        .iter()
+                        .position(|variant| variant.ident(self.tcx) == ident)
+                        .unwrap();
                     let patt = Patt {
                         pat_str: pat_source.get_string(),
                         kind: PattKind::Enum(variant_index),
@@ -721,6 +780,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         arms: &'tcx [rustc_hir::Arm<'tcx>],
     ) {
         let match_source = SourceInfo::from_span(expr.span, self.tcx.sess.source_map());
+        let match_str = match_source.get_string();
         let expr_ty = self.typeck_res.expr_ty(expr);
         let expr_ty = self.resolve_match_type(expr_ty.kind());
         let mut cond;
@@ -744,7 +804,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                 } else {
                     MatchKind::Other
                 };
-                cond = MatchCond::new(match_source.get_string(), match_kind);
+                cond = MatchCond::new(match_source.clone(), match_str.clone(), match_kind);
                 for arm in arms {
                     let patt_map = self.handle_adt_pat(arm.pat, adt_def);
                     let mut guard_map = None;
@@ -770,7 +830,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                 }
             }
             TyKind::Tuple(tuple_def) => {
-                cond = MatchCond::new(match_source.get_string(), MatchKind::StructLike(None));
+                cond = MatchCond::new(match_source.clone(), match_str.clone(), MatchKind::StructLike(None));
                 for arm in arms {
                     let patt_map = self.handle_tuple_pat(arm.pat, tuple_def);
                     let mut guard_map = None;
@@ -796,7 +856,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                 }
             }
             _ => {
-                cond = MatchCond::new(match_source.get_string(), MatchKind::Other);
+                cond = MatchCond::new(match_source.clone(), match_str.clone(), MatchKind::Other);
                 for arm in arms {
                     let patt_map = self.handle_other_pat(arm.pat);
                     let mut guard_map = None;
@@ -823,17 +883,42 @@ impl<'tcx> BranchVisitor<'tcx> {
             }
         }
         if let Some(source) = cond_source {
-            self.source_cond_map.insert(source, Condition::Match(cond));
+            if self.source_cond_map.contains_key(&source) {
+                warn!("Duplicated condition for Match: {:?}", source);
+                self.source_cond_map
+                    .get_mut(&source)
+                    .unwrap()
+                    .push(Condition::Match(cond));
+            } else {
+                self.source_cond_map
+                    .insert(source, vec![Condition::Match(cond)]);
+            }
         } else {
-            self.source_cond_map
-                .insert(match_source, Condition::Match(cond));
+            if self.source_cond_map.contains_key(&match_source) {
+                warn!("Duplicated condition for Match: {:?}", match_source);
+                self.source_cond_map
+                    .get_mut(&match_source)
+                    .unwrap()
+                    .push(Condition::Match(cond));
+            } else {
+                self.source_cond_map
+                    .insert(match_source, vec![Condition::Match(cond)]);
+            }
         }
     }
 
     fn handle_try(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
         let try_source = SourceInfo::from_span(expr.span, self.tcx.sess.source_map());
         let cond = Condition::Try(try_source.get_string());
-        self.source_cond_map.insert(try_source, cond);
+        if self.source_cond_map.contains_key(&try_source) {
+            warn!("Duplicated condition for Try: {:?}", try_source);
+            self.source_cond_map
+                .get_mut(&try_source)
+                .unwrap()
+                .push(cond);
+        } else {
+            self.source_cond_map.insert(try_source, vec![cond]);
+        }
     }
 }
 

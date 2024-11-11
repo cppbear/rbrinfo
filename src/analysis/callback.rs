@@ -148,7 +148,7 @@ struct FnBlocks<'a> {
     dominators: Dominators<BasicBlock>,
     cond_chains: Vec<(Vec<(String, String)>, Vec<BasicBlock>)>,
     source_map: &'a SourceMap,
-    cond_map: HashMap<SourceInfo, Condition>,
+    cond_map: HashMap<SourceInfo, Vec<Condition>>,
 }
 
 impl FnBlocks<'_> {
@@ -161,30 +161,75 @@ impl FnBlocks<'_> {
     fn get_matched_cond(
         &self,
         source_info: &SourceInfo,
+        bb: BasicBlock,
     ) -> Option<(Condition, Option<Vec<SourceInfo>>)> {
         if let Some(cond) = self.cond_map.get(source_info) {
-            return Some((cond.clone(), None));
+            if cond.len() == 1 {
+                return Some((cond[0].clone(), None));
+            } else {
+                for c in cond {
+                    if self.block_contains_cond(bb, source_info) {
+                        return Some((c.clone(), None));
+                    }
+                    if let Condition::Match(match_cond) = c {
+                        if self.block_contains_cond(bb, &match_cond.match_source) {
+                            return Some((c.clone(), None));
+                        }
+                    }
+                }
+                return None;
+            }
         }
 
         for (k, v) in &self.cond_map {
             if source_info.contains(k) || k.contains(source_info) {
-                return Some((v.clone(), None));
-            }
-            if let Condition::Match(match_cond) = v {
-                let mut sources = vec![];
-                for (pat_source, _) in &match_cond.arms {
-                    if source_info.contains(pat_source) || pat_source.contains(source_info) {
-                        // Terminator of kind falseEdge may contain multiple patterns
-                        sources.push(pat_source.clone());
+                if v.len() == 1 {
+                    return Some((v[0].clone(), None));
+                } else {
+                    for c in v {
+                        if self.block_contains_cond(bb, k) {
+                            return Some((c.clone(), None));
+                        }
+                        if let Condition::Match(match_cond) = c {
+                            if self.block_contains_cond(bb, &match_cond.match_source) {
+                                return Some((c.clone(), None));
+                            }
+                        }
                     }
+                    return None;
                 }
-                if !sources.is_empty() {
-                    return Some((v.clone(), Some(sources)));
+            }
+            for c in v {
+                if let Condition::Match(match_cond) = c {
+                    let mut sources = vec![];
+                    for (pat_source, _) in &match_cond.arms {
+                        if source_info.contains(pat_source) || pat_source.contains(source_info) {
+                            // Terminator of kind falseEdge may contain multiple patterns
+                            sources.push(pat_source.clone());
+                        }
+                    }
+                    if !sources.is_empty() {
+                        return Some((c.clone(), Some(sources)));
+                    }
                 }
             }
         }
 
         None
+    }
+
+    fn block_contains_cond(&self, bb: BasicBlock, source: &SourceInfo) -> bool {
+        let block = &self.blocks[bb.index()];
+        for stmt in block.statements.iter().rev() {
+            let stmt_source = self.get_source_info(stmt.source_info.span);
+            if self.fn_source.contains(&stmt_source) {
+                if source.contains(&stmt_source) || stmt_source.contains(source) {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     fn block_in_arm(&self, block: &MyBlock, arm: &Arm) -> bool {
@@ -215,7 +260,10 @@ impl FnBlocks<'_> {
                 i = i + 1;
             }
             let ter_source = self.get_source_info(block.terminator.source_info.span);
-            let formatted = format!("Terminator {{\n    source_info: {:?}\n    kind: {:#?}\n}}\n", ter_source, block.terminator.kind);
+            let formatted = format!(
+                "Terminator {{\n    source_info: {:?}\n    kind: {:#?}\n}}\n",
+                ter_source, block.terminator.kind
+            );
             let spaces = " ".repeat(2);
             let ternimator: String = formatted
                 .lines()
@@ -342,7 +390,7 @@ impl FnBlocks<'_> {
             }
         } else {
             // Span of Terminator does NOT point to a arm pattern, just "match XXX"
-            info!("Span of Terminator does NOT point to a arm pattern");
+            // info!("Span of Terminator does NOT point to a arm pattern");
             //common branches
             for (value, target) in targets.iter() {
                 let mut branches = branches.clone();
@@ -491,7 +539,7 @@ impl FnBlocks<'_> {
         let block_name = *block;
         if let Some(pat_sources) = arm_source {
             // Span of Terminator points to a arm pattern
-            info!("Span of Terminator points to a arm pattern");
+            // info!("Span of Terminator points to a arm pattern");
             assert_eq!(pat_sources.len(), 1);
             let arm = match_cond.arms.get(&pat_sources[0]).unwrap();
             // common branches
@@ -729,7 +777,7 @@ impl FnBlocks<'_> {
             }
         } else {
             // Span of Terminator does NOT point to a arm pattern, just "match XXX"
-            info!("Span of Terminator does NOT point to a arm pattern");
+            // info!("Span of Terminator does NOT point to a arm pattern");
             // common branches
             for (value, target) in targets.iter() {
                 let mut branches = branches.clone();
@@ -895,7 +943,7 @@ impl FnBlocks<'_> {
         let block_name = *block;
         if let Some(pat_sources) = arm_source {
             // Span of Terminator points to a arm pattern
-            info!("Span of Terminator points to a arm pattern");
+            // info!("Span of Terminator points to a arm pattern");
             assert_eq!(pat_sources.len(), 1);
             let arm = match_cond.arms.get(&pat_sources[0]).unwrap();
             // common branches
@@ -1002,7 +1050,7 @@ impl FnBlocks<'_> {
             }
         } else {
             // Span of Terminator does NOT point to a arm pattern, just "match XXX"
-            info!("Span of Terminator does NOT point to a arm pattern");
+            // info!("Span of Terminator does NOT point to a arm pattern");
             // common branches
             for (value, target) in targets.iter() {
                 let mut branches = branches.clone();
@@ -1149,7 +1197,7 @@ impl FnBlocks<'_> {
         } = dfs_cxt;
         let block_name = *block;
         let cond_source = self.get_source_info(ternimator_span);
-        if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source) {
+        if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source, block_name) {
             match condition {
                 Condition::Bool(bool_cond) => match bool_cond {
                     BoolCond::Binary(bin_cond) => {
@@ -1372,9 +1420,16 @@ impl FnBlocks<'_> {
                 }
             }
         } else {
-            if self.fn_source.contains(&cond_source) {
-                error!("No matched condition found for {:?}", cond_source);
-            }
+            error!(
+                "No matched condition found for {:?} in {:?}",
+                cond_source, block_name
+            );
+            // if self.fn_source.contains(&cond_source) {
+            //     error!("No matched condition found for {:?}", cond_source);
+            // } else {
+            //     error!("No matched condition found for {:?}", cond_source);
+            // }
+            // TODO: handle the case where the discr is const
             // common branches
             for (_, target) in targets.iter() {
                 let mut branches = branches.clone();
@@ -1483,7 +1538,8 @@ impl FnBlocks<'_> {
                         let cond_source = self.get_source_info(ter_source.span);
                         let mut path = path.clone();
                         let mut conds = conds.clone();
-                        if let Some((condition, arm_sources)) = self.get_matched_cond(&cond_source)
+                        if let Some((condition, arm_sources)) =
+                            self.get_matched_cond(&cond_source, block.block_name)
                         {
                             match condition {
                                 Condition::Match(match_cond) => {
@@ -1642,6 +1698,7 @@ impl MirCheckerCallbacks {
             block.dump_cfg_to_dot();
             let result = block.iterative_dfs();
             if result {
+                // info!("Dump condition chains to json");
                 block.dump_to_json();
             }
         }

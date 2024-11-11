@@ -8,10 +8,11 @@ use rustc_middle::hir::nested_filter;
 use rustc_middle::mir::BasicBlocks;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::symbol::sym;
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
-use syn::{parse_str, Item};
+use syn::parse_str;
 
 fn is_valid_code(code: &str) -> bool {
     parse_str::<syn::Item>(code).is_ok()
@@ -24,7 +25,7 @@ pub struct HirVisitor<'tcx> {
         String,
         SourceInfo,
         BasicBlocks<'tcx>,
-        HashMap<SourceInfo, Condition>,
+        HashMap<SourceInfo, Vec<Condition>>,
     )>,
 }
 
@@ -43,7 +44,7 @@ impl<'tcx> HirVisitor<'tcx> {
         String,
         SourceInfo,
         BasicBlocks<'tcx>,
-        HashMap<SourceInfo, Condition>,
+        HashMap<SourceInfo, Vec<Condition>>,
     )> {
         self.result
     }
