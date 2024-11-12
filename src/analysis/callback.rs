@@ -162,19 +162,21 @@ impl<'a> FnBlocks<'a> {
     fn get_matched_cond(
         &self,
         source_info: &SourceInfo,
-        bb: BasicBlock,
+        path: &Vec<BasicBlock>,
     ) -> Option<(Condition, Option<Vec<SourceInfo>>)> {
         if let Some(cond) = self.cond_map.get(source_info) {
             if cond.len() == 1 {
                 return Some((cond[0].clone(), None));
             } else {
                 for c in cond {
-                    if self.block_contains_cond(bb, source_info) {
-                        return Some((c.clone(), None));
-                    }
-                    if let Condition::Match(match_cond) = c {
-                        if self.block_contains_cond(bb, &match_cond.match_source) {
+                    for bb in path.iter().rev() {
+                        if self.block_contains_cond(*bb, source_info) {
                             return Some((c.clone(), None));
+                        }
+                        if let Condition::Match(match_cond) = c {
+                            if self.block_contains_cond(*bb, &match_cond.match_source) {
+                                return Some((c.clone(), None));
+                            }
                         }
                     }
                 }
@@ -188,12 +190,14 @@ impl<'a> FnBlocks<'a> {
                     return Some((v[0].clone(), None));
                 } else {
                     for c in v {
-                        if self.block_contains_cond(bb, k) {
-                            return Some((c.clone(), None));
-                        }
-                        if let Condition::Match(match_cond) = c {
-                            if self.block_contains_cond(bb, &match_cond.match_source) {
+                        for bb in path.iter().rev() {
+                            if self.block_contains_cond(*bb, k) {
                                 return Some((c.clone(), None));
+                            }
+                            if let Condition::Match(match_cond) = c {
+                                if self.block_contains_cond(*bb, &match_cond.match_source) {
+                                    return Some((c.clone(), None));
+                                }
                             }
                         }
                     }
@@ -1219,6 +1223,7 @@ impl<'a> FnBlocks<'a> {
         discr: &Operand<'a>,
         targets: &SwitchTargets,
     ) {
+        // TODO: Determine whether `discr` is a constant
         let DFSCxt {
             block,
             path,
@@ -1228,7 +1233,7 @@ impl<'a> FnBlocks<'a> {
         } = dfs_cxt;
         let block_name = *block;
         let cond_source = self.get_source_info(ternimator_span);
-        if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source, block_name) {
+        if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source, path) {
             match condition {
                 Condition::Bool(bool_cond) => match bool_cond {
                     BoolCond::Binary(bin_cond) => {
@@ -1502,7 +1507,7 @@ impl<'a> FnBlocks<'a> {
                     }
                 }
             } else {
-                error!("Operand of SwitchInt is NOT a constant");
+                error!("Operand of SwitchInt is NOT a constant. {:?}", self.fn_name);
                 // common branches
                 for (_, target) in targets.iter() {
                     let mut branches = branches.clone();
@@ -1613,7 +1618,7 @@ impl<'a> FnBlocks<'a> {
                         let mut path = path.clone();
                         let mut conds = conds.clone();
                         if let Some((condition, arm_sources)) =
-                            self.get_matched_cond(&cond_source, block.block_name)
+                            self.get_matched_cond(&cond_source, &path)
                         {
                             match condition {
                                 Condition::Match(match_cond) => {

@@ -16,6 +16,7 @@ pub struct BranchVisitor<'tcx> {
     fn_name: String,
     fn_source: SourceInfo,
     typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
+    // TODO: change Vec to Set
     source_cond_map: HashMap<SourceInfo, Vec<Condition>>,
 }
 
@@ -203,14 +204,13 @@ impl<'tcx> BranchVisitor<'tcx> {
                     map.insert(expr_source, vec![cond]);
                 }
             }
-            rustc_hir::ExprKind::Match(expr, arms, match_kind) => {
-                let cond_source = Some(expr_source.clone());
-                match match_kind {
-                    rustc_hir::MatchSource::Normal => self.handle_match(cond_source, expr, arms),
-                    rustc_hir::MatchSource::TryDesugar(_) => self.handle_try(expr),
-                    _ => {}
+            rustc_hir::ExprKind::Match(expr, arms, match_kind) => match match_kind {
+                rustc_hir::MatchSource::Normal => {
+                    self.handle_match(expr_source.clone(), expr, arms)
                 }
-            }
+                rustc_hir::MatchSource::TryDesugar(_) => self.handle_try(expr),
+                _ => {}
+            },
             rustc_hir::ExprKind::Field(_, _) => {
                 let cond = Condition::Bool(BoolCond::Other(expr_str));
                 if map.contains_key(&expr_source) {
@@ -775,7 +775,7 @@ impl<'tcx> BranchVisitor<'tcx> {
 
     fn handle_match(
         &mut self,
-        cond_source: Option<SourceInfo>,
+        cond_source: SourceInfo,
         expr: &'tcx rustc_hir::Expr<'tcx>,
         arms: &'tcx [rustc_hir::Arm<'tcx>],
     ) {
@@ -830,7 +830,11 @@ impl<'tcx> BranchVisitor<'tcx> {
                 }
             }
             TyKind::Tuple(tuple_def) => {
-                cond = MatchCond::new(match_source.clone(), match_str.clone(), MatchKind::StructLike(None));
+                cond = MatchCond::new(
+                    match_source.clone(),
+                    match_str.clone(),
+                    MatchKind::StructLike(None),
+                );
                 for arm in arms {
                     let patt_map = self.handle_tuple_pat(arm.pat, tuple_def);
                     let mut guard_map = None;
@@ -882,28 +886,27 @@ impl<'tcx> BranchVisitor<'tcx> {
                 }
             }
         }
-        if let Some(source) = cond_source {
-            if self.source_cond_map.contains_key(&source) {
-                warn!("Duplicated condition for Match: {:?}", source);
+        if !self.fn_source.contains(&cond_source) {
+            if self.source_cond_map.contains_key(&cond_source) {
+                warn!("Duplicated condition for Match: {:?}", cond_source);
                 self.source_cond_map
-                    .get_mut(&source)
+                    .get_mut(&cond_source)
                     .unwrap()
-                    .push(Condition::Match(cond));
+                    .push(Condition::Match(cond.clone()));
             } else {
                 self.source_cond_map
-                    .insert(source, vec![Condition::Match(cond)]);
+                    .insert(cond_source, vec![Condition::Match(cond.clone())]);
             }
+        }
+        if self.source_cond_map.contains_key(&match_source) {
+            warn!("Duplicated condition for Match: {:?}", match_source);
+            self.source_cond_map
+                .get_mut(&match_source)
+                .unwrap()
+                .push(Condition::Match(cond));
         } else {
-            if self.source_cond_map.contains_key(&match_source) {
-                warn!("Duplicated condition for Match: {:?}", match_source);
-                self.source_cond_map
-                    .get_mut(&match_source)
-                    .unwrap()
-                    .push(Condition::Match(cond));
-            } else {
-                self.source_cond_map
-                    .insert(match_source, vec![Condition::Match(cond)]);
-            }
+            self.source_cond_map
+                .insert(match_source, vec![Condition::Match(cond)]);
         }
     }
 
@@ -935,7 +938,10 @@ impl<'tcx> Visitor<'tcx> for BranchVisitor<'tcx> {
                 }
             }
             rustc_hir::ExprKind::Match(expr, arms, match_kind) => match match_kind {
-                rustc_hir::MatchSource::Normal => self.handle_match(None, expr, arms),
+                rustc_hir::MatchSource::Normal => {
+                    let expr_source = SourceInfo::from_span(ex.span, self.tcx.sess.source_map());
+                    self.handle_match(expr_source, expr, arms)
+                }
                 rustc_hir::MatchSource::TryDesugar(_) => self.handle_try(expr),
                 _ => {}
             },
