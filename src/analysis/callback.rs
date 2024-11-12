@@ -11,8 +11,9 @@ use rustc_data_structures::graph::StartNode;
 use rustc_driver::Compilation;
 use rustc_interface::interface;
 use rustc_interface::Queries;
+use rustc_middle::mir::interpret::Scalar;
 use rustc_middle::mir::{BasicBlock, Operand};
-use rustc_middle::mir::{Statement, SwitchTargets};
+use rustc_middle::mir::{Const, ConstValue, Rvalue, Statement, StatementKind, SwitchTargets};
 use rustc_middle::mir::{Terminator, TerminatorKind};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::source_map::SourceMap;
@@ -151,7 +152,7 @@ struct FnBlocks<'a> {
     cond_map: HashMap<SourceInfo, Vec<Condition>>,
 }
 
-impl FnBlocks<'_> {
+impl<'a> FnBlocks<'a> {
     const MAX_CONDITIONS: usize = 9999;
 
     fn get_source_info(&self, span: rustc_span::Span) -> SourceInfo {
@@ -1180,12 +1181,42 @@ impl FnBlocks<'_> {
         }
     }
 
+    fn try_get_const(&self, op: &Operand<'a>, path: &Vec<BasicBlock>) -> Option<u128> {
+        if let Some(constop) = op.constant() {
+            if let Const::Val(ConstValue::Scalar(Scalar::Int(sint)), _) = constop.const_ {
+                let value = sint.to_bits(sint.size());
+                return Some(value);
+            }
+        }
+        if let Some(place) = op.place() {
+            'outer: for bb in path.iter().rev() {
+                let block = &self.blocks[bb.index()];
+                for stmt in block.statements.iter().rev() {
+                    if let StatementKind::Assign(assign) = &stmt.kind {
+                        if place == assign.0 {
+                            if let Rvalue::Use(Operand::Constant(constop)) = &assign.1 {
+                                if let Const::Val(ConstValue::Scalar(Scalar::Int(sint)), _) =
+                                    constop.const_
+                                {
+                                    let value = sint.to_bits(sint.size());
+                                    return Some(value);
+                                }
+                            }
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn handle_switchint(
         &self,
         stack: &mut Vec<DFSCxt>,
         dfs_cxt: &DFSCxt,
         ternimator_span: Span,
-        discr: &Operand,
+        discr: &Operand<'a>,
         targets: &SwitchTargets,
     ) {
         let DFSCxt {
@@ -1420,51 +1451,94 @@ impl FnBlocks<'_> {
                 }
             }
         } else {
-            error!(
+            warn!(
                 "No matched condition found for {:?} in {:?}",
                 cond_source, block_name
             );
-            // if self.fn_source.contains(&cond_source) {
-            //     error!("No matched condition found for {:?}", cond_source);
-            // } else {
-            //     error!("No matched condition found for {:?}", cond_source);
-            // }
-            // TODO: handle the case where the discr is const
-            // common branches
-            for (_, target) in targets.iter() {
+            let value = self.try_get_const(discr, path);
+            if let Some(constv) = value {
+                info!("Operand of SwitchInt is a constant: {:?}", constv);
+                let mut found = false;
+                // common branches
+                for (value, target) in targets.iter() {
+                    if value == constv {
+                        found = true;
+                        let mut branches = branches.clone();
+                        if branches.insert((block_name, target)) {
+                            let mut path = path.clone();
+                            let conds = conds.clone();
+
+                            path.push(target);
+                            stack.push(DFSCxt::new(
+                                target,
+                                path,
+                                conds,
+                                branches,
+                                loop_paths.clone(),
+                            ));
+                        }
+                        break;
+                    }
+                }
+                // otherwise branch
+                if !found {
+                    let mut branches = branches.clone();
+                    if !matches!(
+                        self.blocks[targets.otherwise().index()].terminator.kind,
+                        TerminatorKind::Unreachable
+                    ) && branches.insert((block_name, targets.otherwise()))
+                    {
+                        let mut path = path.clone();
+                        let conds = conds.clone();
+
+                        path.push(targets.otherwise());
+                        stack.push(DFSCxt::new(
+                            targets.otherwise(),
+                            path,
+                            conds,
+                            branches,
+                            loop_paths.clone(),
+                        ));
+                    }
+                }
+            } else {
+                error!("Operand of SwitchInt is NOT a constant");
+                // common branches
+                for (_, target) in targets.iter() {
+                    let mut branches = branches.clone();
+                    if branches.insert((block_name, target)) {
+                        let mut path = path.clone();
+                        let conds = conds.clone();
+
+                        path.push(target);
+                        stack.push(DFSCxt::new(
+                            target,
+                            path,
+                            conds,
+                            branches,
+                            loop_paths.clone(),
+                        ));
+                    }
+                }
+                // otherwise branch
                 let mut branches = branches.clone();
-                if branches.insert((block_name, target)) {
+                if !matches!(
+                    self.blocks[targets.otherwise().index()].terminator.kind,
+                    TerminatorKind::Unreachable
+                ) && branches.insert((block_name, targets.otherwise()))
+                {
                     let mut path = path.clone();
                     let conds = conds.clone();
 
-                    path.push(target);
+                    path.push(targets.otherwise());
                     stack.push(DFSCxt::new(
-                        target,
+                        targets.otherwise(),
                         path,
                         conds,
                         branches,
                         loop_paths.clone(),
                     ));
                 }
-            }
-            // otherwise branch
-            let mut branches = branches.clone();
-            if !matches!(
-                self.blocks[targets.otherwise().index()].terminator.kind,
-                TerminatorKind::Unreachable
-            ) && branches.insert((block_name, targets.otherwise()))
-            {
-                let mut path = path.clone();
-                let conds = conds.clone();
-
-                path.push(targets.otherwise());
-                stack.push(DFSCxt::new(
-                    targets.otherwise(),
-                    path,
-                    conds,
-                    branches,
-                    loop_paths.clone(),
-                ));
             }
         }
     }
