@@ -149,7 +149,7 @@ struct FnBlocks<'a> {
     dominators: Dominators<BasicBlock>,
     cond_chains: Vec<(Vec<(String, String)>, Vec<BasicBlock>)>,
     source_map: &'a SourceMap,
-    cond_map: HashMap<SourceInfo, Vec<Condition>>,
+    cond_map: HashMap<SourceInfo, HashSet<Condition>>,
 }
 
 impl<'a> FnBlocks<'a> {
@@ -166,10 +166,10 @@ impl<'a> FnBlocks<'a> {
     ) -> Option<(Condition, Option<Vec<SourceInfo>>)> {
         if let Some(cond) = self.cond_map.get(source_info) {
             if cond.len() == 1 {
-                return Some((cond[0].clone(), None));
+                return Some((cond.iter().next().unwrap().clone(), None));
             } else {
-                for c in cond {
-                    for bb in path.iter().rev() {
+                for bb in path.iter().rev() {
+                    for c in cond {
                         if self.block_contains_cond(*bb, source_info) {
                             return Some((c.clone(), None));
                         }
@@ -187,10 +187,10 @@ impl<'a> FnBlocks<'a> {
         for (k, v) in &self.cond_map {
             if source_info.contains(k) || k.contains(source_info) {
                 if v.len() == 1 {
-                    return Some((v[0].clone(), None));
+                    return Some((v.iter().next().unwrap().clone(), None));
                 } else {
-                    for c in v {
-                        for bb in path.iter().rev() {
+                    for bb in path.iter().rev() {
+                        for c in v {
                             if self.block_contains_cond(*bb, k) {
                                 return Some((c.clone(), None));
                             }
@@ -305,8 +305,7 @@ impl<'a> FnBlocks<'a> {
         let block_name = *block;
         if let Some(pat_sources) = arm_source {
             // Span of Terminator points to a arm pattern
-            error!("Span of Terminator for Enum points to an arm pattern, this is NOT common. Check {:?}", block_name);
-            // FIXME: handle matches! macro
+            warn!("Span of Terminator for Enum points to an arm pattern, this is NOT common. Check {:?}", block_name);
             assert_eq!(pat_sources.len(), 1);
             let arm = match_cond.arms.get(&pat_sources[0]).unwrap();
             // common branches
@@ -318,11 +317,11 @@ impl<'a> FnBlocks<'a> {
                     let mut conds = conds.clone();
 
                     match arm.pat.kind {
-                        PattKind::Enum(index) => {
-                            if value == index as u128 {
+                        PattKind::Enum(_) => {
+                            if value == 0 {
                                 conds.push((
                                     format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
-                                    "true".to_string(),
+                                    "false".to_string(),
                                 ));
                             }
                         }
@@ -366,7 +365,7 @@ impl<'a> FnBlocks<'a> {
                     PattKind::Enum(_) => {
                         conds.push((
                             format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
-                            "false".to_string(),
+                            "true".to_string(),
                         ));
                     }
                     PattKind::Wild => {
@@ -405,19 +404,13 @@ impl<'a> FnBlocks<'a> {
                     let mut conds = conds.clone();
 
                     let mut found = false;
+                    let mut pat_strs = vec![];
                     for (arm_source, arm) in &match_cond.arms {
                         match arm.pat.kind {
                             PattKind::Enum(index) => {
                                 if value == index as u128 {
-                                    conds.push((
-                                        format!(
-                                            "{} matches {}",
-                                            match_cond.match_str, arm.pat.pat_str
-                                        ),
-                                        "true".to_string(),
-                                    ));
+                                    pat_strs.push(arm.pat.pat_str.clone());
                                     found = true;
-                                    break;
                                 }
                             }
                             PattKind::Wild => {}
@@ -430,11 +423,25 @@ impl<'a> FnBlocks<'a> {
                             }
                         }
                     }
+                    conds.push((
+                        format!("{} matches {}", match_cond.match_str, pat_strs.join(" or ")),
+                        "true".to_string(),
+                    ));
                     if !found {
-                        error!(
-                            "No matched arm found for Enum branch {:?} -> {:?}",
-                            block_name, target
+                        if matches!(
+                            self.blocks[target.index()].terminator.kind,
+                            TerminatorKind::FalseEdge { .. }
+                        ) {
+                            warn!(
+                            "No matched arm found for Enum {}, branch {:?} -> {:?} (Terminator is FalseEdge)",
+                            value, block_name, target
                         );
+                        } else {
+                            error!(
+                            "No matched arm found for Enum {}, branch {:?} -> {:?}, condition {:?}",
+                            value, block_name, target, match_cond
+                        );
+                        }
                         // Check if the target block is in the arm body
                         for (_, arm) in &match_cond.arms {
                             if self.block_in_arm(&self.blocks[target.index()], arm) {
@@ -442,6 +449,7 @@ impl<'a> FnBlocks<'a> {
                                     format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                     "true".to_string(),
                                 ));
+                                info!("The target block is in the arm body");
                                 break;
                             }
                         }
@@ -1223,7 +1231,6 @@ impl<'a> FnBlocks<'a> {
         discr: &Operand<'a>,
         targets: &SwitchTargets,
     ) {
-        // TODO: Determine whether `discr` is a constant
         let DFSCxt {
             block,
             path,
@@ -1232,6 +1239,56 @@ impl<'a> FnBlocks<'a> {
             loop_paths,
         } = dfs_cxt;
         let block_name = *block;
+        // Determine whether `discr` is a constant
+        let value = self.try_get_const(discr, path);
+        if let Some(constv) = value {
+            info!("Operand of SwitchInt is a constant: {:?}", constv);
+            let mut found = false;
+            // common branches
+            for (value, target) in targets.iter() {
+                if value == constv {
+                    found = true;
+                    let mut branches = branches.clone();
+                    if branches.insert((block_name, target)) {
+                        let mut path = path.clone();
+                        let conds = conds.clone();
+
+                        path.push(target);
+                        stack.push(DFSCxt::new(
+                            target,
+                            path,
+                            conds,
+                            branches,
+                            loop_paths.clone(),
+                        ));
+                    }
+                    break;
+                }
+            }
+            // otherwise branch
+            if !found {
+                let mut branches = branches.clone();
+                if !matches!(
+                    self.blocks[targets.otherwise().index()].terminator.kind,
+                    TerminatorKind::Unreachable
+                ) && branches.insert((block_name, targets.otherwise()))
+                {
+                    let mut path = path.clone();
+                    let conds = conds.clone();
+
+                    path.push(targets.otherwise());
+                    stack.push(DFSCxt::new(
+                        targets.otherwise(),
+                        path,
+                        conds,
+                        branches,
+                        loop_paths.clone(),
+                    ));
+                }
+            }
+            return;
+        }
+
         let cond_source = self.get_source_info(ternimator_span);
         if let Some((condition, arm_source)) = self.get_matched_cond(&cond_source, path) {
             match condition {
@@ -1460,90 +1517,41 @@ impl<'a> FnBlocks<'a> {
                 "No matched condition found for {:?} in {:?}",
                 cond_source, block_name
             );
-            let value = self.try_get_const(discr, path);
-            if let Some(constv) = value {
-                info!("Operand of SwitchInt is a constant: {:?}", constv);
-                let mut found = false;
-                // common branches
-                for (value, target) in targets.iter() {
-                    if value == constv {
-                        found = true;
-                        let mut branches = branches.clone();
-                        if branches.insert((block_name, target)) {
-                            let mut path = path.clone();
-                            let conds = conds.clone();
-
-                            path.push(target);
-                            stack.push(DFSCxt::new(
-                                target,
-                                path,
-                                conds,
-                                branches,
-                                loop_paths.clone(),
-                            ));
-                        }
-                        break;
-                    }
-                }
-                // otherwise branch
-                if !found {
-                    let mut branches = branches.clone();
-                    if !matches!(
-                        self.blocks[targets.otherwise().index()].terminator.kind,
-                        TerminatorKind::Unreachable
-                    ) && branches.insert((block_name, targets.otherwise()))
-                    {
-                        let mut path = path.clone();
-                        let conds = conds.clone();
-
-                        path.push(targets.otherwise());
-                        stack.push(DFSCxt::new(
-                            targets.otherwise(),
-                            path,
-                            conds,
-                            branches,
-                            loop_paths.clone(),
-                        ));
-                    }
-                }
-            } else {
-                error!("Operand of SwitchInt is NOT a constant. {:?}", self.fn_name);
-                // common branches
-                for (_, target) in targets.iter() {
-                    let mut branches = branches.clone();
-                    if branches.insert((block_name, target)) {
-                        let mut path = path.clone();
-                        let conds = conds.clone();
-
-                        path.push(target);
-                        stack.push(DFSCxt::new(
-                            target,
-                            path,
-                            conds,
-                            branches,
-                            loop_paths.clone(),
-                        ));
-                    }
-                }
-                // otherwise branch
+            // common branches
+            for (_, target) in targets.iter() {
                 let mut branches = branches.clone();
-                if !matches!(
-                    self.blocks[targets.otherwise().index()].terminator.kind,
-                    TerminatorKind::Unreachable
-                ) && branches.insert((block_name, targets.otherwise()))
-                {
+                if branches.insert((block_name, target)) {
                     let mut path = path.clone();
                     let conds = conds.clone();
 
-                    path.push(targets.otherwise());
+                    path.push(target);
                     stack.push(DFSCxt::new(
-                        targets.otherwise(),
+                        target,
                         path,
                         conds,
                         branches,
                         loop_paths.clone(),
                     ));
                 }
+            }
+            // otherwise branch
+            let mut branches = branches.clone();
+            if !matches!(
+                self.blocks[targets.otherwise().index()].terminator.kind,
+                TerminatorKind::Unreachable
+            ) && branches.insert((block_name, targets.otherwise()))
+            {
+                let mut path = path.clone();
+                let conds = conds.clone();
+
+                path.push(targets.otherwise());
+                stack.push(DFSCxt::new(
+                    targets.otherwise(),
+                    path,
+                    conds,
+                    branches,
+                    loop_paths.clone(),
+                ));
             }
         }
     }
@@ -1598,7 +1606,7 @@ impl<'a> FnBlocks<'a> {
             if block.suc_blocks.is_empty() {
                 self.cond_chains.push((conds.clone(), path.clone()));
                 if self.cond_chains.len() > Self::MAX_CONDITIONS {
-                    error!("Too many condition chains");
+                    warn!("Too many condition chains");
                     return false;
                 }
             } else {

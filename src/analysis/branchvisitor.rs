@@ -7,7 +7,7 @@ use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::ty::{self, TyCtxt, TyKind};
 use rustc_span::source_map::Spanned;
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 
@@ -16,7 +16,6 @@ pub struct BranchVisitor<'tcx> {
     fn_name: String,
     fn_source: SourceInfo,
     typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
-    // TODO: change Vec to Set
     source_cond_map: HashMap<SourceInfo, Vec<Condition>>,
 }
 
@@ -40,13 +39,21 @@ impl<'tcx> BranchVisitor<'tcx> {
         let dir_path = format!("./rbrinfo/{}", self.fn_name);
         let file_path = format!("{}/cond_map.json", dir_path);
         fs::create_dir_all(dir_path).unwrap();
-        let json = serde_json::to_string_pretty(&self.source_cond_map).unwrap();
+        let map: HashMap<SourceInfo, HashSet<Condition>> = self
+            .source_cond_map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone().into_iter().collect()))
+            .collect();
+        let json = serde_json::to_string_pretty(&map).unwrap();
         let mut file = File::create(file_path).unwrap();
         file.write_all(json.as_bytes()).unwrap();
     }
 
-    pub fn move_map(self) -> HashMap<SourceInfo, Vec<Condition>> {
+    pub fn move_map(self) -> HashMap<SourceInfo, HashSet<Condition>> {
         self.source_cond_map
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect()
     }
 
     fn is_comparable_literal(expr: &rustc_hir::Expr) -> bool {
@@ -811,6 +818,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                     if let Some(guard) = arm.guard {
                         let cond_map = self.handle_expr(guard);
                         self.source_cond_map.extend(cond_map.clone());
+                        let cond_map = cond_map
+                            .into_iter()
+                            .map(|(source_info, cond)| (source_info, cond.into_iter().collect()))
+                            .collect();
                         guard_map = Some(cond_map);
                     }
                     let body_source =
@@ -841,6 +852,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                     if let Some(guard) = &arm.guard {
                         let cond_map = self.handle_expr(guard);
                         self.source_cond_map.extend(cond_map.clone());
+                        let cond_map = cond_map
+                            .into_iter()
+                            .map(|(source_info, cond)| (source_info, cond.into_iter().collect()))
+                            .collect();
                         guard_map = Some(cond_map);
                     }
                     let body_source =
@@ -867,6 +882,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                     if let Some(guard) = &arm.guard {
                         let cond_map = self.handle_expr(guard);
                         self.source_cond_map.extend(cond_map.clone());
+                        let cond_map = cond_map
+                            .into_iter()
+                            .map(|(source_info, cond)| (source_info, cond.into_iter().collect()))
+                            .collect();
                         guard_map = Some(cond_map);
                     }
                     let body_source =

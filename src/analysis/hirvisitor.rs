@@ -8,8 +8,7 @@ use rustc_middle::hir::nested_filter;
 use rustc_middle::mir::BasicBlocks;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::symbol::sym;
-use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use syn::parse_str;
@@ -25,7 +24,7 @@ pub struct HirVisitor<'tcx> {
         String,
         SourceInfo,
         BasicBlocks<'tcx>,
-        HashMap<SourceInfo, Vec<Condition>>,
+        HashMap<SourceInfo, HashSet<Condition>>,
     )>,
 }
 
@@ -44,7 +43,7 @@ impl<'tcx> HirVisitor<'tcx> {
         String,
         SourceInfo,
         BasicBlocks<'tcx>,
-        HashMap<SourceInfo, Vec<Condition>>,
+        HashMap<SourceInfo, HashSet<Condition>>,
     )> {
         self.result
     }

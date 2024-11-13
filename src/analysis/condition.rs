@@ -1,10 +1,11 @@
 use super::sourceinfo::SourceInfo;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::{self, Display, Formatter},
+    hash::{Hash, Hasher},
 };
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, serde::Serialize)]
 pub enum Condition {
     Bool(BoolCond),
     For(ForCond),
@@ -12,13 +13,13 @@ pub enum Condition {
     Try(String),
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, serde::Serialize)]
 pub enum BoolCond {
     Binary(BinaryCond),
     Other(String),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, serde::Serialize)]
 pub enum BinKind {
     Eq,
     Lt,
@@ -52,7 +53,7 @@ impl BoolCond {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, serde::Serialize)]
 pub struct BinaryCond {
     pub kind: BinKind,
     pub expr: String,
@@ -94,7 +95,7 @@ impl BinaryCond {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, serde::Serialize)]
 pub struct ForCond {
     pub iter_var: String,
     pub iter_range: String,
@@ -106,7 +107,7 @@ impl ForCond {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum PattKind {
     Enum(usize),
     StructLike(HashMap<usize, (Option<u128>, SourceInfo)>),
@@ -114,20 +115,52 @@ pub enum PattKind {
     Wild,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+impl Hash for PattKind {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            PattKind::Enum(idx) => idx.hash(state),
+            PattKind::StructLike(fields) => {
+                for (key, (opt, _source_info)) in fields {
+                    key.hash(state);
+                    opt.hash(state);
+                    _source_info.hash(state);
+                }
+            }
+            PattKind::Other(val) => val.hash(state),
+            PattKind::Wild => "wild".hash(state),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, serde::Serialize)]
 pub struct Patt {
     pub pat_str: String,
     pub kind: PattKind,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Arm {
     pub pat: Patt,
-    pub guard: Option<HashMap<SourceInfo, Vec<Condition>>>,
+    pub guard: Option<HashMap<SourceInfo, HashSet<Condition>>>,
     pub body_source: Option<SourceInfo>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+impl Hash for Arm {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.pat.hash(state);
+        if let Some(guard) = &self.guard {
+            for (key, val) in guard {
+                key.hash(state);
+                for cond in val {
+                    cond.hash(state);
+                }
+            }
+        }
+        self.body_source.hash(state);
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, serde::Serialize)]
 pub enum MatchKind {
     Enum(Vec<String>),
     StructLike(Option<Vec<String>>),
@@ -144,7 +177,7 @@ impl MatchKind {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct MatchCond {
     pub match_source: SourceInfo,
     pub match_str: String,
@@ -152,8 +185,20 @@ pub struct MatchCond {
     pub arms: HashMap<SourceInfo, Arm>,
 }
 
+impl Hash for MatchCond {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.match_source.hash(state);
+        self.match_str.hash(state);
+        self.match_kind.hash(state);
+        for (key, val) in &self.arms {
+            key.hash(state);
+            val.hash(state);
+        }
+    }
+}
+
 impl MatchCond {
-    pub fn new(match_source: SourceInfo, match_str: String,  match_kind: MatchKind) -> Self {
+    pub fn new(match_source: SourceInfo, match_str: String, match_kind: MatchKind) -> Self {
         Self {
             match_source,
             match_str,
