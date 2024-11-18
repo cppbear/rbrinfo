@@ -64,8 +64,11 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         span: rustc_span::Span,
         id: rustc_hir::def_id::LocalDefId,
     ) -> Self::Result {
-        let fn_name = format!("{:?}", id);
-        info!("Visiting function: {}", fn_name);
+        let id_str = format!("{:?}", id);
+        let def_id = id.to_def_id();
+        let mut fn_name = self.tcx.crate_name(def_id.krate).to_string();
+        fn_name.push_str(&self.tcx.def_path(def_id).to_string_no_crate_verbose());
+        info!("Visiting function: {}, name: {}", id_str, fn_name);
 
         // Skip functions that are automatically derived
         for parent in self.hir_map.parent_id_iter(b.hir_id) {
