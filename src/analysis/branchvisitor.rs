@@ -13,7 +13,8 @@ use std::io::Write;
 
 pub struct BranchVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
-    fn_name: String,
+    id: String,
+    name: String,
     fn_source: SourceInfo,
     typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
     source_cond_map: HashMap<SourceInfo, Vec<Condition>>,
@@ -22,13 +23,15 @@ pub struct BranchVisitor<'tcx> {
 impl<'tcx> BranchVisitor<'tcx> {
     pub fn new(
         tcx: TyCtxt<'tcx>,
-        fn_name: String,
+        id: String,
+        name: String,
         fn_source: SourceInfo,
         typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
     ) -> Self {
         Self {
             tcx,
-            fn_name,
+            id,
+            name,
             fn_source,
             typeck_res,
             source_cond_map: HashMap::new(),
@@ -36,7 +39,7 @@ impl<'tcx> BranchVisitor<'tcx> {
     }
 
     pub fn output_map(&self) {
-        let dir_path = format!("./rbrinfo/{}", self.fn_name);
+        let dir_path = format!("./rbrinfo/{}", self.id);
         let file_path = format!("{}/cond_map.json", dir_path);
         fs::create_dir_all(dir_path).unwrap();
         let map: HashMap<SourceInfo, HashSet<Condition>> = self

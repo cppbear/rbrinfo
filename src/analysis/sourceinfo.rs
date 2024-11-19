@@ -37,6 +37,10 @@ impl SourceInfo {
         }
     }
 
+    pub fn get_line(&self) -> usize {
+        self.start_line
+    }
+
     pub fn get_string(&self) -> String {
         if self.file_path.is_empty() {
             return String::new();

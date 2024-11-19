@@ -63,6 +63,23 @@ pub struct BinaryCond {
 }
 
 impl BinaryCond {
+    // pub fn has_bound(&self, cond: bool) -> bool {
+    //     match self.kind {
+    //         BinKind::Lt | BinKind::Gt => {
+    //             if !cond {
+    //                 return true;
+    //             }
+    //         }
+    //         BinKind::Le | BinKind::Ge => {
+    //             if cond {
+    //                 return true;
+    //             }
+    //         }
+    //         _ => return false,
+    //     }
+    //     false
+    // }
+
     pub fn get_bound(&self, cond: bool) -> Option<String> {
         match self.kind {
             BinKind::Lt | BinKind::Gt => {

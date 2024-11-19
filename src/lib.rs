@@ -1,5 +1,5 @@
 #![feature(rustc_private)]
-#![feature(custom_mir)]
+// #![feature(custom_mir)]
 
 extern crate rustc_abi;
 extern crate rustc_ast;
@@ -24,6 +24,8 @@ pub mod analysis {
     mod branchvisitor;
     pub mod callback;
     mod condition;
+    mod exporter;
+    mod fnblocks;
     mod hirvisitor;
     pub mod option;
     mod sourceinfo;

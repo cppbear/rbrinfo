@@ -22,6 +22,7 @@ pub struct HirVisitor<'tcx> {
     hir_map: Map<'tcx>,
     result: Vec<(
         String,
+        String,
         SourceInfo,
         BasicBlocks<'tcx>,
         HashMap<SourceInfo, HashSet<Condition>>,
@@ -40,6 +41,7 @@ impl<'tcx> HirVisitor<'tcx> {
     pub fn move_result(
         self,
     ) -> Vec<(
+        String,
         String,
         SourceInfo,
         BasicBlocks<'tcx>,
@@ -91,7 +93,7 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         }
 
         // write function source code to file
-        let dir_path = format!("./rbrinfo/{}", fn_name);
+        let dir_path = format!("./rbrinfo/{}", id_str);
         let file_path = format!("{}/code.rs", dir_path);
         fs::create_dir_all(dir_path).unwrap();
         let mut file = File::create(file_path).unwrap();
@@ -101,7 +103,7 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         let mir = self.tcx.mir_built(id).borrow();
 
         // write HIR to file
-        let dir_path = format!("./rbrinfo/{}", fn_name);
+        let dir_path = format!("./rbrinfo/{}", id_str);
         let file_path = format!("{}/hir.txt", dir_path);
         fs::create_dir_all(dir_path).unwrap();
         let mut file = File::create(file_path).unwrap();
@@ -111,6 +113,7 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         // tranverse HIR
         let mut visitor = BranchVisitor::new(
             self.tcx,
+            id_str.clone(),
             fn_name.clone(),
             fn_source.clone(),
             self.tcx.typeck(hir.id().hir_id.owner),
@@ -119,6 +122,7 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         visitor.output_map();
 
         self.result.push((
+            id_str,
             fn_name,
             fn_source,
             mir.basic_blocks.clone(),
