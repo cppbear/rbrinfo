@@ -201,9 +201,31 @@ impl Debug for SourceInfo {
 impl serde::Serialize for SourceInfo {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let s = format!(
-            "{}:{}:{}-{}:{}",
+            "{}:{}:{}:{}:{}",
             self.file_path, self.start_line, self.start_column, self.end_line, self.end_column
         );
         serializer.serialize_str(&s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SourceInfo {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() != 5 {
+            return Err(serde::de::Error::custom("Invalid SourceInfo format"));
+        }
+        let file_path = parts[0].to_string();
+        let start_line = parts[1].parse().unwrap();
+        let start_column = parts[2].parse().unwrap();
+        let end_line = parts[3].parse().unwrap();
+        let end_column = parts[4].parse().unwrap();
+        Ok(SourceInfo {
+            file_path,
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+        })
     }
 }

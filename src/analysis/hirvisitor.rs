@@ -1,5 +1,6 @@
 use super::branchvisitor::BranchVisitor;
 use super::condition::Condition;
+use super::exporter::ModInfo;
 use super::sourceinfo::SourceInfo;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{self, BodyId, FnDecl};
@@ -17,16 +18,20 @@ fn is_valid_code(code: &str) -> bool {
     parse_str::<syn::Item>(code).is_ok()
 }
 
+pub struct VisitorData<'tcx> {
+    pub id: String,
+    pub fn_name: String,
+    pub mod_info: ModInfo,
+    pub fn_source: SourceInfo,
+    pub basic_blocks: BasicBlocks<'tcx>,
+    pub cond_map: HashMap<SourceInfo, HashSet<Condition>>,
+}
+
 pub struct HirVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
     hir_map: Map<'tcx>,
-    result: Vec<(
-        String,
-        String,
-        SourceInfo,
-        BasicBlocks<'tcx>,
-        HashMap<SourceInfo, HashSet<Condition>>,
-    )>,
+    mod_infos: Vec<ModInfo>,
+    result: Vec<VisitorData<'tcx>>,
 }
 
 impl<'tcx> HirVisitor<'tcx> {
@@ -34,28 +39,40 @@ impl<'tcx> HirVisitor<'tcx> {
         HirVisitor {
             tcx,
             hir_map,
+            mod_infos: Vec::new(),
             result: Vec::new(),
         }
     }
 
-    pub fn move_result(
-        self,
-    ) -> Vec<(
-        String,
-        String,
-        SourceInfo,
-        BasicBlocks<'tcx>,
-        HashMap<SourceInfo, HashSet<Condition>>,
-    )> {
+    pub fn move_result(self) -> Vec<VisitorData<'tcx>> {
         self.result
     }
 }
 
 impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
-    type NestedFilter = nested_filter::OnlyBodies;
+    type NestedFilter = nested_filter::All;
 
     fn nested_visit_map(&mut self) -> Self::Map {
         self.hir_map
+    }
+
+    fn visit_mod(
+        &mut self,
+        m: &'tcx rustc_hir::Mod<'tcx>,
+        _s: rustc_span::Span,
+        n: rustc_hir::HirId,
+    ) -> Self::Result {
+        let mod_source = SourceInfo::from_span(_s, self.tcx.sess.source_map());
+        let def_id = n.owner.to_def_id();
+        let module_name = self.tcx.def_path_str(def_id);
+        info!("Visiting module: {}, {:?}", module_name, mod_source);
+        self.mod_infos.push(ModInfo {
+            name: module_name.clone(),
+            loc: mod_source,
+        });
+        intravisit::walk_mod(self, m, n);
+        info!("Leaving module: {}", module_name);
+        self.mod_infos.pop();
     }
 
     fn visit_fn(
@@ -71,6 +88,8 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         let mut fn_name = self.tcx.crate_name(def_id.krate).to_string();
         fn_name.push_str(&self.tcx.def_path(def_id).to_string_no_crate_verbose());
         info!("Visiting function: {}, name: {}", id_str, fn_name);
+
+        let mod_info = self.mod_infos.last().unwrap();
 
         // Skip functions that are automatically derived
         for parent in self.hir_map.parent_id_iter(b.hir_id) {
@@ -121,13 +140,16 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         intravisit::walk_body::<BranchVisitor>(&mut visitor, &hir);
         visitor.output_map();
 
-        self.result.push((
-            id_str,
+        let data = VisitorData {
+            id: id_str,
             fn_name,
+            mod_info: mod_info.clone(),
             fn_source,
-            mir.basic_blocks.clone(),
-            visitor.move_map(),
-        ));
+            basic_blocks: mir.basic_blocks.clone(),
+            cond_map: visitor.move_map(),
+        };
+
+        self.result.push(data);
 
         // intravisit::walk_fn(self, fk, fd, b, id);
     }

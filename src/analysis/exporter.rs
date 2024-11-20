@@ -1,19 +1,21 @@
+use super::sourceinfo::SourceInfo;
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BrData {
     name: String,
-    file: String,
+    mod_info: ModInfo,
+    loc: SourceInfo,
     codes: Vec<String>,
-    loc: (usize, usize),
     cond_chains: Vec<CondChain>,
 }
 
 impl BrData {
-    pub fn new(name: String, file: String, codes: Vec<String>, loc: (usize, usize)) -> Self {
+    pub fn new(name: String, mod_info: ModInfo, loc: SourceInfo, codes: Vec<String>) -> Self {
         Self {
             name,
-            file,
-            codes,
+            mod_info,
             loc,
+            codes,
             cond_chains: vec![],
         }
     }
@@ -29,6 +31,12 @@ impl BrData {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct ModInfo {
+    pub name: String,
+    pub loc: SourceInfo,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CondChain {
     id: usize,
     conds: Vec<Cond>,
@@ -37,11 +45,7 @@ pub struct CondChain {
 
 impl CondChain {
     pub fn new(conds: Vec<Cond>, path: Vec<usize>) -> Self {
-        Self {
-            id: 0,
-            conds,
-            path,
-        }
+        Self { id: 0, conds, path }
     }
 }
 

@@ -1,5 +1,5 @@
 use super::condition::{Arm, BoolCond, Condition, MatchCond, MatchKind, PattKind};
-use super::exporter::{BrData, Cond, CondChain};
+use super::exporter::{BrData, Cond, CondChain, ModInfo};
 use super::sourceinfo::SourceInfo;
 use petgraph::dot::Config;
 use petgraph::dot::Dot;
@@ -123,24 +123,22 @@ impl<'a> FnBlocks<'a> {
         id: String,
         name: String,
         fn_source: SourceInfo,
+        mod_info: ModInfo,
         start_node: BasicBlock,
         blocks: Vec<MyBlock<'a>>,
         dominators: Dominators<BasicBlock>,
         source_map: &'a SourceMap,
         cond_map: HashMap<SourceInfo, HashSet<Condition>>,
     ) -> Self {
-        let file = fn_source.get_file();
-        let start_line = fn_source.get_startline();
-        let end_line = fn_source.get_endline();
         let codes = get_codes(&fn_source);
         Self {
             id,
             name: name.clone(),
-            fn_source,
+            fn_source: fn_source.clone(),
             start_node,
             blocks,
             dominators,
-            cond_chains: BrData::new(name, file, codes, (start_line, end_line)),
+            cond_chains: BrData::new(name, mod_info, fn_source, codes),
             source_map,
             cond_map,
         }

@@ -1,5 +1,5 @@
 use super::fnblocks::{FnBlocks, MyBlock};
-use super::hirvisitor::HirVisitor;
+use super::hirvisitor::{HirVisitor, VisitorData};
 use super::option::AnalysisOption;
 use rustc_data_structures::graph::StartNode;
 use rustc_driver::Compilation;
@@ -51,11 +51,20 @@ impl MirCheckerCallbacks {
     fn run_analysis<'tcx, 'compiler>(&mut self, tcx: TyCtxt<'tcx>) {
         let hir_map = tcx.hir();
         let mut visitor = HirVisitor::new(tcx, hir_map);
-        hir_map.visit_all_item_likes_in_crate(&mut visitor);
+        // hir_map.visit_all_item_likes_in_crate(&mut visitor);
+        hir_map.walk_toplevel_module(&mut visitor);
         let result = visitor.move_result();
 
         let mut ret: Vec<FnBlocks> = vec![];
-        for (id, fn_name, fn_source, basic_blocks, cond_map) in result {
+        for data in result {
+            let VisitorData {
+                id,
+                fn_name,
+                mod_info,
+                fn_source,
+                basic_blocks,
+                cond_map,
+            } = data;
             let mut fn_blocks: Vec<MyBlock> = vec![];
             let blocks: &rustc_middle::mir::BasicBlocks<'_> = &basic_blocks;
             let pre_blocks = blocks.predecessors();
@@ -87,6 +96,7 @@ impl MirCheckerCallbacks {
                 id,
                 fn_name,
                 fn_source,
+                mod_info,
                 blocks.start_node(),
                 fn_blocks,
                 blocks.dominators().clone(),
