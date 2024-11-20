@@ -37,12 +37,24 @@ impl SourceInfo {
         }
     }
 
+    pub fn get_file(&self) -> String {
+        self.file_path.clone()
+    }
+
     pub fn get_startline(&self) -> usize {
         self.start_line
     }
 
+    pub fn get_startcolumn(&self) -> usize {
+        self.start_column
+    }
+
     pub fn get_endline(&self) -> usize {
         self.end_line
+    }
+
+    pub fn get_endcolumn(&self) -> usize {
+        self.end_column
     }
 
     pub fn get_string(&self) -> String {

@@ -1,5 +1,5 @@
 use super::condition::{Arm, BoolCond, Condition, MatchCond, MatchKind, PattKind};
-use super::exporter::{Cond, CondChain, BrData};
+use super::exporter::{BrData, Cond, CondChain};
 use super::sourceinfo::SourceInfo;
 use petgraph::dot::Config;
 use petgraph::dot::Dot;
@@ -88,7 +88,9 @@ fn get_codes(fn_source: &SourceInfo) -> Vec<String> {
     let lines: Vec<&str> = code.lines().collect();
     let mut codes = vec![];
     if let Some(first_line) = lines.first() {
-        let leading_spaces = first_line.chars().take_while(|c| c.is_whitespace()).count();
+        let leading_spaces = first_line.chars().take_while(|c| c.is_whitespace()).count()
+            + fn_source.get_startcolumn()
+            - 1;
         codes = lines
             .iter()
             .map(|line| {
@@ -127,6 +129,7 @@ impl<'a> FnBlocks<'a> {
         source_map: &'a SourceMap,
         cond_map: HashMap<SourceInfo, HashSet<Condition>>,
     ) -> Self {
+        let file = fn_source.get_file();
         let start_line = fn_source.get_startline();
         let end_line = fn_source.get_endline();
         let codes = get_codes(&fn_source);
@@ -137,7 +140,7 @@ impl<'a> FnBlocks<'a> {
             start_node,
             blocks,
             dominators,
-            cond_chains: BrData::new(name, codes, (start_line, end_line)),
+            cond_chains: BrData::new(name, file, codes, (start_line, end_line)),
             source_map,
             cond_map,
         }
@@ -1773,7 +1776,7 @@ impl<'a> FnBlocks<'a> {
     }
 
     pub fn dump_to_json(&self) {
-        let dir_path = "./rbrinfo/cond_chains";
+        let dir_path = "./rbrinfo/brdata";
         let file_path = format!("{}/{}.json", dir_path, self.id);
         fs::create_dir_all(dir_path).unwrap();
         let json = serde_json::to_string_pretty(&self.cond_chains).unwrap();

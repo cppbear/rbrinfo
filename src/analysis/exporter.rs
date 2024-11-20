@@ -1,15 +1,17 @@
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BrData {
     name: String,
+    file: String,
     codes: Vec<String>,
     loc: (usize, usize),
     cond_chains: Vec<CondChain>,
 }
 
 impl BrData {
-    pub fn new(name: String, codes: Vec<String>, loc: (usize, usize)) -> Self {
+    pub fn new(name: String, file: String, codes: Vec<String>, loc: (usize, usize)) -> Self {
         Self {
             name,
+            file,
             codes,
             loc,
             cond_chains: vec![],
