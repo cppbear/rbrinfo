@@ -37,8 +37,12 @@ impl SourceInfo {
         }
     }
 
-    pub fn get_line(&self) -> usize {
+    pub fn get_startline(&self) -> usize {
         self.start_line
+    }
+
+    pub fn get_endline(&self) -> usize {
+        self.end_line
     }
 
     pub fn get_string(&self) -> String {

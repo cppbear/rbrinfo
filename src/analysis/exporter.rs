@@ -1,13 +1,17 @@
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct JsonData {
     name: String,
+    codes: Vec<String>,
+    loc: (usize, usize),
     con_chains: Vec<CondChain>,
 }
 
 impl JsonData {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: String, codes: Vec<String>, loc: (usize, usize)) -> Self {
         Self {
             name,
+            codes,
+            loc,
             con_chains: vec![],
         }
     }

@@ -83,6 +83,24 @@ fn remove_subsequence<T: PartialEq>(vec: &mut Vec<T>, subseq: &Vec<T>) {
     }
 }
 
+fn get_codes(fn_source: &SourceInfo) -> Vec<String> {
+    let code = fn_source.get_string();
+    let lines: Vec<&str> = code.lines().collect();
+    let mut codes = vec![];
+    if let Some(first_line) = lines.first() {
+        let leading_spaces = first_line.chars().take_while(|c| c.is_whitespace()).count();
+        codes = lines
+            .iter()
+            .map(|line| {
+                let line_leading_spaces = line.chars().take_while(|c| c.is_whitespace()).count();
+                let spaces_to_trim = line_leading_spaces.min(leading_spaces);
+                line.chars().skip(spaces_to_trim).collect::<String>()
+            })
+            .collect();
+    }
+    codes
+}
+
 #[derive(Clone)]
 pub struct FnBlocks<'a> {
     pub id: String,
@@ -109,6 +127,9 @@ impl<'a> FnBlocks<'a> {
         source_map: &'a SourceMap,
         cond_map: HashMap<SourceInfo, HashSet<Condition>>,
     ) -> Self {
+        let start_line = fn_source.get_startline();
+        let end_line = fn_source.get_endline();
+        let codes = get_codes(&fn_source);
         Self {
             id,
             name: name.clone(),
@@ -116,7 +137,7 @@ impl<'a> FnBlocks<'a> {
             start_node,
             blocks,
             dominators,
-            cond_chains: JsonData::new(name),
+            cond_chains: JsonData::new(name, codes, (start_line, end_line)),
             source_map,
             cond_map,
         }
@@ -286,7 +307,11 @@ impl<'a> FnBlocks<'a> {
                     match arm.pat.kind {
                         PattKind::Enum(_) => {
                             if value == 0 {
-                                conds.push(Cond::new(format!("{} matches {}", match_cond.match_str, arm.pat.pat_str), "false".to_string(), pat_sources[0].get_line()));
+                                conds.push(Cond::new(
+                                    format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
+                                    "false".to_string(),
+                                    pat_sources[0].get_startline(),
+                                ));
                             }
                         }
                         PattKind::Wild => {
@@ -327,7 +352,11 @@ impl<'a> FnBlocks<'a> {
 
                 match arm.pat.kind {
                     PattKind::Enum(_) => {
-                        conds.push(Cond::new(format!("{} matches {}", match_cond.match_str, arm.pat.pat_str), "true".to_string(), pat_sources[0].get_line()));
+                        conds.push(Cond::new(
+                            format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
+                            "true".to_string(),
+                            pat_sources[0].get_startline(),
+                        ));
                     }
                     PattKind::Wild => {
                         error!(
@@ -387,7 +416,7 @@ impl<'a> FnBlocks<'a> {
                     conds.push(Cond::new(
                         format!("{} matches {}", match_cond.match_str, pat_strs.join(" or ")),
                         "true".to_string(),
-                        match_cond.match_source.get_line(),
+                        match_cond.match_source.get_startline(),
                     ));
                     if !found {
                         if matches!(
@@ -410,7 +439,7 @@ impl<'a> FnBlocks<'a> {
                                 conds.push(Cond::new(
                                     format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                     "true".to_string(),
-                                    arm_source.get_line(),
+                                    arm_source.get_startline(),
                                 ));
                                 info!("The target block is in the arm body");
                                 break;
@@ -446,7 +475,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                 "false".to_string(),
-                                arm_source.get_line(),
+                                arm_source.get_startline(),
                             ));
                             found = true;
                         }
@@ -454,7 +483,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 format!("{} matches _", match_cond.match_str),
                                 "true".to_string(),
-                                arm_source.get_line(),
+                                arm_source.get_startline(),
                             ));
                             found = true;
                         }
@@ -479,7 +508,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                 "true".to_string(),
-                                arm_source.get_line(),
+                                arm_source.get_startline(),
                             ));
                             break;
                         }
@@ -547,7 +576,7 @@ impl<'a> FnBlocks<'a> {
                                                 field_source.get_string()
                                             ),
                                             "true".to_string(),
-                                            field_source.get_line(),
+                                            field_source.get_startline(),
                                         ));
                                     } else {
                                         if value != 0 {
@@ -561,7 +590,7 @@ impl<'a> FnBlocks<'a> {
                                                 field_source.get_string()
                                             ),
                                             "false".to_string(),
-                                            field_source.get_line(),
+                                            field_source.get_startline(),
                                         ));
                                     }
                                     found = true;
@@ -594,7 +623,7 @@ impl<'a> FnBlocks<'a> {
                                                             field_source.get_string()
                                                         ),
                                                         "true".to_string(),
-                                                        field_source.get_line(),
+                                                        field_source.get_startline(),
                                                     ));
                                                 } else {
                                                     if value != 0 {
@@ -610,7 +639,7 @@ impl<'a> FnBlocks<'a> {
                                                             field_source.get_string()
                                                         ),
                                                         "false".to_string(),
-                                                        field_source.get_line(),
+                                                        field_source.get_startline(),
                                                     ));
                                                 }
                                                 break;
@@ -625,7 +654,7 @@ impl<'a> FnBlocks<'a> {
                                 conds.push(Cond::new(
                                     format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                     "true".to_string(),
-                                    pat_sources[0].get_line(),
+                                    pat_sources[0].get_startline(),
                                 ));
                             }
                         }
@@ -674,7 +703,7 @@ impl<'a> FnBlocks<'a> {
                                             field_source.get_string()
                                         ),
                                         "false".to_string(),
-                                        field_source.get_line(),
+                                        field_source.get_startline(),
                                     ));
                                 } else {
                                     conds.push(Cond::new(
@@ -685,7 +714,7 @@ impl<'a> FnBlocks<'a> {
                                             field_source.get_string()
                                         ),
                                         "true".to_string(),
-                                        field_source.get_line(),
+                                        field_source.get_startline(),
                                     ));
                                 }
                                 found = true;
@@ -713,7 +742,7 @@ impl<'a> FnBlocks<'a> {
                                                             source.get_string()
                                                         ),
                                                         "false".to_string(),
-                                                        source.get_line(),
+                                                        source.get_startline(),
                                                     ));
                                                 } else {
                                                     conds.push(Cond::new(
@@ -726,7 +755,7 @@ impl<'a> FnBlocks<'a> {
                                                             source.get_string()
                                                         ),
                                                         "true".to_string(),
-                                                        source.get_line(),
+                                                        source.get_startline(),
                                                     ));
                                                 }
                                                 break;
@@ -742,7 +771,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                 "true".to_string(),
-                                pat_sources[0].get_line(),
+                                pat_sources[0].get_startline(),
                             ));
                         }
                     }
@@ -797,7 +826,7 @@ impl<'a> FnBlocks<'a> {
                                                                 source.get_string()
                                                             ),
                                                             "true".to_string(),
-                                                            cond_source.get_line(),
+                                                            cond_source.get_startline(),
                                                         ));
                                                         break 'arms;
                                                     }
@@ -825,7 +854,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                 "true".to_string(),
-                                arm_source.get_line(),
+                                arm_source.get_startline(),
                             ));
                             break;
                         }
@@ -873,7 +902,7 @@ impl<'a> FnBlocks<'a> {
                                                             source.get_string()
                                                         ),
                                                         "true".to_string(),
-                                                        cond_source.get_line(),
+                                                        cond_source.get_startline(),
                                                     ));
                                                 }
                                             }
@@ -900,7 +929,7 @@ impl<'a> FnBlocks<'a> {
                         conds.push(Cond::new(
                             format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                             "true".to_string(),
-                            arm_source.get_line(),
+                            arm_source.get_startline(),
                         ));
                         break;
                     }
@@ -956,7 +985,7 @@ impl<'a> FnBlocks<'a> {
                                 conds.push(Cond::new(
                                     format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                     "true".to_string(),
-                                    pat_sources[0].get_line(),
+                                    pat_sources[0].get_startline(),
                                 ));
                             } else {
                                 if value != 0 {
@@ -965,7 +994,7 @@ impl<'a> FnBlocks<'a> {
                                 conds.push(Cond::new(
                                     format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                     "false".to_string(),
-                                    pat_sources[0].get_line(),
+                                    pat_sources[0].get_startline(),
                                 ));
                             }
                             // Check if the target block is in the arm body
@@ -973,7 +1002,7 @@ impl<'a> FnBlocks<'a> {
                                 conds.push(Cond::new(
                                     format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                     "true".to_string(),
-                                    pat_sources[0].get_line(),
+                                    pat_sources[0].get_startline(),
                                 ));
                             }
                         }
@@ -1012,13 +1041,13 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                 "false".to_string(),
-                                pat_sources[0].get_line(),
+                                pat_sources[0].get_startline(),
                             ));
                         } else {
                             conds.push(Cond::new(
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                 "true".to_string(),
-                                pat_sources[0].get_line(),
+                                pat_sources[0].get_startline(),
                             ));
                         }
                         // Check if the target block is in the arm body
@@ -1026,7 +1055,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                 "true".to_string(),
-                                pat_sources[0].get_line(),
+                                pat_sources[0].get_startline(),
                             ));
                         }
                     }
@@ -1069,7 +1098,7 @@ impl<'a> FnBlocks<'a> {
                                                 match_cond.match_str, arm.pat.pat_str
                                             ),
                                             "true".to_string(),
-                                            arm_source.get_line(),
+                                            arm_source.get_startline(),
                                         ));
                                         break;
                                     }
@@ -1105,7 +1134,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                                 "true".to_string(),
-                                arm_source.get_line(),
+                                arm_source.get_startline(),
                             ));
                             break;
                         }
@@ -1145,7 +1174,7 @@ impl<'a> FnBlocks<'a> {
                                             match_cond.match_str, arm.pat.pat_str
                                         ),
                                         "true".to_string(),
-                                        arm_source.get_line(),
+                                        arm_source.get_startline(),
                                     ));
                                 }
                             }
@@ -1165,7 +1194,7 @@ impl<'a> FnBlocks<'a> {
                         conds.push(Cond::new(
                             format!("{} matches {}", match_cond.match_str, arm.pat.pat_str),
                             "true".to_string(),
-                            arm_source.get_line(),
+                            arm_source.get_startline(),
                         ));
                         break;
                     }
@@ -1295,7 +1324,7 @@ impl<'a> FnBlocks<'a> {
                                     let mut cond = Cond::new(
                                         bin_cond.get_cond_str(),
                                         "true".to_string(),
-                                        cond_source.get_line(),
+                                        cond_source.get_startline(),
                                     );
                                     cond.bound = bin_cond.get_bound(true);
                                     conds.push(cond);
@@ -1303,7 +1332,7 @@ impl<'a> FnBlocks<'a> {
                                     let mut cond = Cond::new(
                                         bin_cond.get_cond_str(),
                                         "false".to_string(),
-                                        cond_source.get_line(),
+                                        cond_source.get_startline(),
                                     );
                                     cond.bound = bin_cond.get_bound(false);
                                     conds.push(cond);
@@ -1312,7 +1341,7 @@ impl<'a> FnBlocks<'a> {
                                         let mut cond = Cond::new(
                                             bin_cond.get_cond_str(),
                                             "false".to_string(),
-                                            cond_source.get_line(),
+                                            cond_source.get_startline(),
                                         );
                                         cond.bound = bin_cond.get_bound(false);
                                         conds.push(cond);
@@ -1320,7 +1349,7 @@ impl<'a> FnBlocks<'a> {
                                         let mut cond = Cond::new(
                                             bin_cond.get_cond_str(),
                                             "true".to_string(),
-                                            cond_source.get_line(),
+                                            cond_source.get_startline(),
                                         );
                                         cond.bound = bin_cond.get_bound(true);
                                         conds.push(cond);
@@ -1351,7 +1380,7 @@ impl<'a> FnBlocks<'a> {
                                 let mut cond = Cond::new(
                                     bin_cond.get_cond_str(),
                                     "false".to_string(),
-                                    cond_source.get_line(),
+                                    cond_source.get_startline(),
                                 );
                                 cond.bound = bin_cond.get_bound(false);
                                 conds.push(cond);
@@ -1359,7 +1388,7 @@ impl<'a> FnBlocks<'a> {
                                 let mut cond = Cond::new(
                                     bin_cond.get_cond_str(),
                                     "true".to_string(),
-                                    cond_source.get_line(),
+                                    cond_source.get_startline(),
                                 );
                                 cond.bound = bin_cond.get_bound(true);
                                 conds.push(cond);
@@ -1367,7 +1396,7 @@ impl<'a> FnBlocks<'a> {
                                 let mut cond = Cond::new(
                                     bin_cond.get_cond_str(),
                                     "true".to_string(),
-                                    cond_source.get_line(),
+                                    cond_source.get_startline(),
                                 );
                                 cond.bound = bin_cond.get_bound(true);
                                 conds.push(cond);
@@ -1395,13 +1424,13 @@ impl<'a> FnBlocks<'a> {
                                     conds.push(Cond::new(
                                         cond_str.clone(),
                                         "false".to_string(),
-                                        cond_source.get_line(),
+                                        cond_source.get_startline(),
                                     ));
                                 } else {
                                     conds.push(Cond::new(
                                         cond_str.clone(),
                                         "true".to_string(),
-                                        cond_source.get_line(),
+                                        cond_source.get_startline(),
                                     ));
                                 }
 
@@ -1428,7 +1457,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 cond_str.clone(),
                                 "true".to_string(),
-                                cond_source.get_line(),
+                                cond_source.get_startline(),
                             ));
 
                             path.push(targets.otherwise());
@@ -1458,7 +1487,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 for_cond.get_cond_str(),
                                 value_str.to_string(),
-                                cond_source.get_line(),
+                                cond_source.get_startline(),
                             ));
 
                             path.push(target);
@@ -1484,7 +1513,7 @@ impl<'a> FnBlocks<'a> {
                         conds.push(Cond::new(
                             for_cond.get_cond_str(),
                             "otherwise".to_string(),
-                            cond_source.get_line(),
+                            cond_source.get_startline(),
                         ));
 
                         path.push(targets.otherwise());
@@ -1532,7 +1561,7 @@ impl<'a> FnBlocks<'a> {
                             conds.push(Cond::new(
                                 try_str.clone(),
                                 value_str.to_string(),
-                                cond_source.get_line(),
+                                cond_source.get_startline(),
                             ));
 
                             path.push(target);
@@ -1558,7 +1587,7 @@ impl<'a> FnBlocks<'a> {
                         conds.push(Cond::new(
                             try_str.clone(),
                             "otherwise".to_string(),
-                            cond_source.get_line(),
+                            cond_source.get_startline(),
                         ));
 
                         path.push(targets.otherwise());
@@ -1664,7 +1693,10 @@ impl<'a> FnBlocks<'a> {
 
             // extract the condition
             if block.suc_blocks.is_empty() {
-                let chain = CondChain::new(conds.clone(), path.iter().map(|x| x.index()).collect::<Vec<usize>>());
+                let chain = CondChain::new(
+                    conds.clone(),
+                    path.iter().map(|x| x.index()).collect::<Vec<usize>>(),
+                );
                 self.cond_chains.add_chain(chain);
                 if self.cond_chains.chain_len() > Self::MAX_CONDITIONS {
                     warn!("Too many condition chains");
@@ -1701,9 +1733,12 @@ impl<'a> FnBlocks<'a> {
                                             .collect::<Vec<String>>()
                                             .join(" or ");
                                         conds.push(Cond::new(
-                                            format!("{} matches {}", match_cond.match_str, pat_strs),
+                                            format!(
+                                                "{} matches {}",
+                                                match_cond.match_str, pat_strs
+                                            ),
                                             "true".to_string(),
-                                            match_cond.match_source.get_line(),
+                                            match_cond.match_source.get_startline(),
                                         ));
                                     }
                                 }
