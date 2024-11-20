@@ -1,5 +1,5 @@
 use super::condition::{Arm, BoolCond, Condition, MatchCond, MatchKind, PattKind};
-use super::exporter::{Cond, CondChain, JsonData};
+use super::exporter::{Cond, CondChain, BrData};
 use super::sourceinfo::SourceInfo;
 use petgraph::dot::Config;
 use petgraph::dot::Dot;
@@ -109,7 +109,7 @@ pub struct FnBlocks<'a> {
     start_node: BasicBlock,
     blocks: Vec<MyBlock<'a>>,
     dominators: Dominators<BasicBlock>,
-    cond_chains: JsonData,
+    cond_chains: BrData,
     source_map: &'a SourceMap,
     cond_map: HashMap<SourceInfo, HashSet<Condition>>,
 }
@@ -137,7 +137,7 @@ impl<'a> FnBlocks<'a> {
             start_node,
             blocks,
             dominators,
-            cond_chains: JsonData::new(name, codes, (start_line, end_line)),
+            cond_chains: BrData::new(name, codes, (start_line, end_line)),
             source_map,
             cond_map,
         }

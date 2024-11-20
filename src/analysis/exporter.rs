@@ -1,12 +1,12 @@
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct JsonData {
+pub struct BrData {
     name: String,
     codes: Vec<String>,
     loc: (usize, usize),
     cond_chains: Vec<CondChain>,
 }
 
-impl JsonData {
+impl BrData {
     pub fn new(name: String, codes: Vec<String>, loc: (usize, usize)) -> Self {
         Self {
             name,
