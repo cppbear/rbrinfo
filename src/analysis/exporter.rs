@@ -3,7 +3,7 @@ pub struct JsonData {
     name: String,
     codes: Vec<String>,
     loc: (usize, usize),
-    con_chains: Vec<CondChain>,
+    cond_chains: Vec<CondChain>,
 }
 
 impl JsonData {
@@ -12,17 +12,17 @@ impl JsonData {
             name,
             codes,
             loc,
-            con_chains: vec![],
+            cond_chains: vec![],
         }
     }
 
     pub fn chain_len(&self) -> usize {
-        self.con_chains.len()
+        self.cond_chains.len()
     }
 
     pub fn add_chain(&mut self, mut chain: CondChain) {
-        chain.id = self.con_chains.len() + 1;
-        self.con_chains.push(chain);
+        chain.id = self.cond_chains.len() + 1;
+        self.cond_chains.push(chain);
     }
 }
 
