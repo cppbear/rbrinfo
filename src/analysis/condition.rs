@@ -104,9 +104,21 @@ impl BinaryCond {
     pub fn ne_with_int(&self) -> bool {
         self.cmp_with_int && self.kind == BinKind::Ne
     }
-}
 
-impl BinaryCond {
+    pub fn get_norm_str(&self) -> Option<String> {
+        if !matches!(self.kind, BinKind::Other) && self.lhs > self.rhs {
+            let kind = match self.kind {
+                BinKind::Lt => BinKind::Gt,
+                BinKind::Le => BinKind::Ge,
+                BinKind::Gt => BinKind::Lt,
+                BinKind::Ge => BinKind::Le,
+                _ => self.kind,
+            };
+            return Some(format!("{} {} {}", self.rhs, kind, self.lhs));
+        }
+        None
+    }
+
     pub fn get_cond_str(&self) -> String {
         self.expr.clone()
     }

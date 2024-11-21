@@ -113,13 +113,14 @@ impl<'tcx> BranchVisitor<'tcx> {
                     BinOpKind::Lt => BinKind::Lt,
                     _ => BinKind::Other,
                 };
-                let cond = Condition::Bool(BoolCond::Binary(BinaryCond {
+                let bin_cond = BinaryCond {
                     kind,
                     expr: expr_source.get_string(),
                     lhs,
                     rhs,
                     cmp_with_int,
-                }));
+                };
+                let cond = Condition::Bool(BoolCond::Binary(bin_cond));
                 if map.contains_key(&expr_source) {
                     warn!("Duplicated condition for Binary: {:?}", expr_source);
                     map.get_mut(&expr_source).unwrap().push(cond);

@@ -107,6 +107,7 @@ fn get_codes(fn_source: &SourceInfo) -> Vec<String> {
 pub struct FnBlocks<'a> {
     pub id: String,
     pub name: String,
+    has_ret: bool,
     fn_source: SourceInfo,
     start_node: BasicBlock,
     blocks: Vec<MyBlock<'a>>,
@@ -122,6 +123,7 @@ impl<'a> FnBlocks<'a> {
     pub fn new(
         id: String,
         name: String,
+        has_ret: bool,
         fn_source: SourceInfo,
         mod_info: ModInfo,
         start_node: BasicBlock,
@@ -134,6 +136,7 @@ impl<'a> FnBlocks<'a> {
         Self {
             id,
             name: name.clone(),
+            has_ret,
             fn_source: fn_source.clone(),
             start_node,
             blocks,
@@ -1328,6 +1331,7 @@ impl<'a> FnBlocks<'a> {
                                         cond_source.get_startline(),
                                     );
                                     cond.bound = bin_cond.get_bound(true);
+                                    cond.norm = bin_cond.get_norm_str();
                                     conds.push(cond);
                                 } else if bin_cond.ne_with_int() {
                                     let mut cond = Cond::new(
@@ -1336,6 +1340,7 @@ impl<'a> FnBlocks<'a> {
                                         cond_source.get_startline(),
                                     );
                                     cond.bound = bin_cond.get_bound(false);
+                                    cond.norm = bin_cond.get_norm_str();
                                     conds.push(cond);
                                 } else {
                                     if value == 0 {
@@ -1345,6 +1350,7 @@ impl<'a> FnBlocks<'a> {
                                             cond_source.get_startline(),
                                         );
                                         cond.bound = bin_cond.get_bound(false);
+                                        cond.norm = bin_cond.get_norm_str();
                                         conds.push(cond);
                                     } else {
                                         let mut cond = Cond::new(
@@ -1353,6 +1359,7 @@ impl<'a> FnBlocks<'a> {
                                             cond_source.get_startline(),
                                         );
                                         cond.bound = bin_cond.get_bound(true);
+                                        cond.norm = bin_cond.get_norm_str();
                                         conds.push(cond);
                                     }
                                 }
@@ -1384,6 +1391,7 @@ impl<'a> FnBlocks<'a> {
                                     cond_source.get_startline(),
                                 );
                                 cond.bound = bin_cond.get_bound(false);
+                                cond.norm = bin_cond.get_norm_str();
                                 conds.push(cond);
                             } else if bin_cond.ne_with_int() {
                                 let mut cond = Cond::new(
@@ -1392,6 +1400,7 @@ impl<'a> FnBlocks<'a> {
                                     cond_source.get_startline(),
                                 );
                                 cond.bound = bin_cond.get_bound(true);
+                                cond.norm = bin_cond.get_norm_str();
                                 conds.push(cond);
                             } else {
                                 let mut cond = Cond::new(
@@ -1400,6 +1409,7 @@ impl<'a> FnBlocks<'a> {
                                     cond_source.get_startline(),
                                 );
                                 cond.bound = bin_cond.get_bound(true);
+                                cond.norm = bin_cond.get_norm_str();
                                 conds.push(cond);
                             }
 
@@ -1646,6 +1656,24 @@ impl<'a> FnBlocks<'a> {
         }
     }
 
+    fn get_ret(&self, path: &Vec<BasicBlock>) -> Option<String> {
+        if self.has_ret {
+            for bb in path.iter().rev() {
+                let block = &self.blocks[bb.index()];
+                for stmt in block.statements.iter().rev() {
+                    if let StatementKind::Assign(assign) = &stmt.kind {
+                        let place = assign.0;
+                        if place.local.index() == 0 {
+                            let ret_source = self.get_source_info(stmt.source_info.span);
+                            return Some(ret_source.get_string());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn iterative_dfs(&mut self) -> bool {
         let mut stack: Vec<DFSCxt> = Vec::new();
         let dfs_cxt = DFSCxt::new(
@@ -1694,10 +1722,13 @@ impl<'a> FnBlocks<'a> {
 
             // extract the condition
             if block.suc_blocks.is_empty() {
-                let chain = CondChain::new(
+                let ret_value = self.get_ret(path);
+                let mut chain = CondChain::new(
                     conds.clone(),
                     path.iter().map(|x| x.index()).collect::<Vec<usize>>(),
+                    ret_value,
                 );
+                chain.set_may_contra();
                 self.cond_chains.add_chain(chain);
                 if self.cond_chains.chain_len() > Self::MAX_CONDITIONS {
                     warn!("Too many condition chains");
@@ -1769,6 +1800,7 @@ impl<'a> FnBlocks<'a> {
                 }
             }
         }
+        self.cond_chains.set_min_set();
 
         true
     }

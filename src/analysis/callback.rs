@@ -60,6 +60,7 @@ impl MirCheckerCallbacks {
             let VisitorData {
                 id,
                 fn_name,
+                has_ret,
                 mod_info,
                 fn_source,
                 basic_blocks,
@@ -95,6 +96,7 @@ impl MirCheckerCallbacks {
             let a_fn_block = FnBlocks::new(
                 id,
                 fn_name,
+                has_ret,
                 fn_source,
                 mod_info,
                 blocks.start_node(),

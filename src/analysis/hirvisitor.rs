@@ -21,6 +21,7 @@ fn is_valid_code(code: &str) -> bool {
 pub struct VisitorData<'tcx> {
     pub id: String,
     pub fn_name: String,
+    pub has_ret: bool,
     pub mod_info: ModInfo,
     pub fn_source: SourceInfo,
     pub basic_blocks: BasicBlocks<'tcx>,
@@ -90,6 +91,7 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         info!("Visiting function: {}, name: {}", id_str, fn_name);
 
         let mod_info = self.mod_infos.last().unwrap();
+        let has_ret = matches!(_fd.output, rustc_hir::FnRetTy::Return(_));
 
         // Skip functions that are automatically derived
         for parent in self.hir_map.parent_id_iter(b.hir_id) {
@@ -143,6 +145,7 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         let data = VisitorData {
             id: id_str,
             fn_name,
+            has_ret,
             mod_info: mod_info.clone(),
             fn_source,
             basic_blocks: mir.basic_blocks.clone(),
