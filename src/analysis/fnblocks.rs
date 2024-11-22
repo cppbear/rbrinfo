@@ -1801,6 +1801,7 @@ impl<'a> FnBlocks<'a> {
             }
         }
         self.cond_chains.set_min_set();
+        self.cond_chains.set_size();
 
         true
     }

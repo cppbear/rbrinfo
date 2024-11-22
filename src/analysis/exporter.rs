@@ -1,14 +1,14 @@
-use rustc_span::sym::sub;
-
 use super::sourceinfo::SourceInfo;
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BrData {
     name: String,
     mod_info: ModInfo,
     loc: SourceInfo,
     codes: Vec<String>,
+    size: SizeInfo,
     cond_chains: Vec<CondChain>,
 }
 
@@ -19,6 +19,11 @@ impl BrData {
             mod_info,
             loc,
             codes,
+            size: SizeInfo {
+                chain: 0,
+                contra: 0,
+                min_set: 0,
+            },
             cond_chains: vec![],
         }
     }
@@ -58,15 +63,28 @@ impl BrData {
             }
         }
     }
+
+    pub fn set_size(&mut self) {
+        self.size.chain = self.cond_chains.len();
+        self.size.contra = self.cond_chains.iter().filter(|s| s.may_contra).count();
+        self.size.min_set = self.cond_chains.iter().filter(|s| s.min_set).count();
+    }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
+struct SizeInfo {
+    chain: usize,
+    contra: usize,
+    min_set: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ModInfo {
     pub name: String,
     pub loc: SourceInfo,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CondChain {
     id: usize,
     conds: Vec<Cond>,
@@ -104,14 +122,16 @@ impl CondChain {
     pub fn set_may_contra(&mut self) {
         let mut map = HashMap::new();
         for cond in &self.conds {
-            if let Some(flag) = map.get(cond.norm.as_ref().unwrap_or(&cond.cond)) {
+            if let Some(flag) =
+                map.get(&(cond.norm.clone().unwrap_or(cond.cond.clone()), cond.line))
+            {
                 if flag != &cond.value {
                     self.may_contra = true;
                     break;
                 }
             } else {
                 map.insert(
-                    cond.norm.clone().unwrap_or(cond.cond.clone()),
+                    (cond.norm.clone().unwrap_or(cond.cond.clone()), cond.line),
                     cond.value.clone(),
                 );
             }
@@ -119,7 +139,7 @@ impl CondChain {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Cond {
     pub cond: String,
     pub norm: Option<String>,
