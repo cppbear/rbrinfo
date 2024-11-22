@@ -7,18 +7,18 @@ pub struct BrData {
     name: String,
     mod_info: ModInfo,
     loc: SourceInfo,
-    codes: Vec<String>,
+    code: Vec<String>,
     size: SizeInfo,
     cond_chains: Vec<CondChain>,
 }
 
 impl BrData {
-    pub fn new(name: String, mod_info: ModInfo, loc: SourceInfo, codes: Vec<String>) -> Self {
+    pub fn new(name: String, mod_info: ModInfo, loc: SourceInfo, code: Vec<String>) -> Self {
         Self {
             name,
             mod_info,
             loc,
-            codes,
+            code,
             size: SizeInfo {
                 chain: 0,
                 contra: 0,
