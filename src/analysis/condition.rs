@@ -138,7 +138,7 @@ impl ForCond {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum PattKind {
-    Enum(usize),
+    Enum(u128),
     StructLike(HashMap<usize, (Option<u128>, SourceInfo)>),
     Other(Option<u128>),
     Wild,

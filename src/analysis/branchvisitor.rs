@@ -305,9 +305,12 @@ impl<'tcx> BranchVisitor<'tcx> {
                         ) => {
                             let variant_index = adt_def.variant_index_with_ctor_id(ctor_def_id);
                             // println!("variant_index: {}", variant_index.index());
+                            let discr = adt_def
+                                .discriminant_for_variant(self.tcx, variant_index)
+                                .val;
                             let patt = Patt {
                                 pat_str: pat_source.get_string(),
-                                kind: PattKind::Enum(variant_index.index()),
+                                kind: PattKind::Enum(discr),
                             };
                             (pat_source, patt)
                         }
@@ -317,9 +320,12 @@ impl<'tcx> BranchVisitor<'tcx> {
                         ) => {
                             let variant_index = adt_def.variant_index_with_id(variant_def_id);
                             // println!("variant_index: {}", variant_index.index());
+                            let discr = adt_def
+                                .discriminant_for_variant(self.tcx, variant_index)
+                                .val;
                             let patt = Patt {
                                 pat_str: pat_source.get_string(),
-                                kind: PattKind::Enum(variant_index.index()),
+                                kind: PattKind::Enum(discr),
                             };
                             (pat_source, patt)
                         }
@@ -345,12 +351,16 @@ impl<'tcx> BranchVisitor<'tcx> {
                     let ident = path_seg.ident;
                     let variant_index = adt_def
                         .variants()
-                        .iter()
-                        .position(|variant| variant.ident(self.tcx) == ident)
-                        .unwrap();
+                        .iter_enumerated()
+                        .find(|(_, v)| v.ident(self.tcx) == ident)
+                        .unwrap()
+                        .0;
+                    let discr = adt_def
+                        .discriminant_for_variant(self.tcx, variant_index)
+                        .val;
                     let patt = Patt {
                         pat_str: pat_source.get_string(),
-                        kind: PattKind::Enum(variant_index),
+                        kind: PattKind::Enum(discr),
                     };
                     (pat_source, patt)
                 }
