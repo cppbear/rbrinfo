@@ -126,6 +126,7 @@ impl<'a> FnBlocks<'a> {
         has_ret: bool,
         fn_source: SourceInfo,
         mod_info: ModInfo,
+        visible: bool,
         start_node: BasicBlock,
         blocks: Vec<MyBlock<'a>>,
         dominators: Dominators<BasicBlock>,
@@ -141,7 +142,7 @@ impl<'a> FnBlocks<'a> {
             start_node,
             blocks,
             dominators,
-            cond_chains: BrData::new(name, mod_info, fn_source, codes),
+            cond_chains: BrData::new(name, mod_info, visible, fn_source, codes),
             source_map,
             cond_map,
         }

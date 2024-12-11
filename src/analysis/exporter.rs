@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 pub struct BrData {
     name: String,
     mod_info: ModInfo,
+    visible: bool,
     loc: SourceInfo,
     code: Vec<String>,
     size: SizeInfo,
@@ -13,10 +14,11 @@ pub struct BrData {
 }
 
 impl BrData {
-    pub fn new(name: String, mod_info: ModInfo, loc: SourceInfo, code: Vec<String>) -> Self {
+    pub fn new(name: String, mod_info: ModInfo, visible: bool, loc: SourceInfo, code: Vec<String>) -> Self {
         Self {
             name,
             mod_info,
+            visible,
             loc,
             code,
             size: SizeInfo {

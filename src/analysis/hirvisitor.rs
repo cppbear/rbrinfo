@@ -2,6 +2,7 @@ use super::branchvisitor::BranchVisitor;
 use super::condition::Condition;
 use super::exporter::ModInfo;
 use super::sourceinfo::SourceInfo;
+use rustc_hir::def_id::CRATE_DEF_ID;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{self, BodyId, FnDecl};
 use rustc_middle::hir::map::Map;
@@ -23,6 +24,7 @@ pub struct VisitorData<'tcx> {
     pub fn_name: String,
     pub has_ret: bool,
     pub mod_info: ModInfo,
+    pub visible: bool,
     pub fn_source: SourceInfo,
     pub basic_blocks: BasicBlocks<'tcx>,
     pub cond_map: HashMap<SourceInfo, HashSet<Condition>>,
@@ -47,6 +49,16 @@ impl<'tcx> HirVisitor<'tcx> {
 
     pub fn move_result(self) -> Vec<VisitorData<'tcx>> {
         self.result
+    }
+
+    fn is_accessible_from_crate(
+        &self,
+        def_id: rustc_hir::def_id::DefId,
+        source: &SourceInfo,
+    ) -> bool {
+        let visibility = self.tcx.visibility(def_id);
+        visibility.is_accessible_from(CRATE_DEF_ID.to_def_id(), self.tcx)
+            && !source.get_file().contains("main.rs")
     }
 }
 
@@ -142,11 +154,15 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         intravisit::walk_body::<BranchVisitor>(&mut visitor, &hir);
         visitor.output_map();
 
+        // check visibility
+        let visible = self.is_accessible_from_crate(def_id, &fn_source);
+
         let data = VisitorData {
             id: id_str,
             fn_name,
             has_ret,
             mod_info: mod_info.clone(),
+            visible,
             fn_source,
             basic_blocks: mir.basic_blocks.clone(),
             cond_map: visitor.move_map(),
