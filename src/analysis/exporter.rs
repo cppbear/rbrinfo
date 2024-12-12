@@ -45,6 +45,12 @@ impl BrData {
             .iter()
             .flat_map(|chain| chain.get_cond_set())
             .collect();
+        if uncovered.len() < 2 {
+            for chain in &mut self.cond_chains {
+                chain.min_set = true;
+            }
+            return;
+        }
         let (non_contra, contra): (Vec<_>, Vec<_>) =
             self.cond_chains.iter_mut().partition(|s| !s.may_contra);
         for subset in [non_contra, contra].iter_mut() {
