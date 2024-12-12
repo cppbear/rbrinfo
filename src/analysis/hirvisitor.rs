@@ -2,6 +2,8 @@ use super::branchvisitor::BranchVisitor;
 use super::condition::Condition;
 use super::exporter::ModInfo;
 use super::sourceinfo::SourceInfo;
+use rustc_ast::token::CommentKind;
+use rustc_ast::AttrKind;
 use rustc_hir::def_id::CRATE_DEF_ID;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{self, BodyId, FnDecl};
@@ -22,6 +24,7 @@ fn is_valid_code(code: &str) -> bool {
 pub struct VisitorData<'tcx> {
     pub id: String,
     pub fn_name: String,
+    pub doc: String,
     pub has_ret: bool,
     pub mod_info: ModInfo,
     pub visible: bool,
@@ -157,9 +160,27 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
         // check visibility
         let visible = self.is_accessible_from_crate(def_id, &fn_source);
 
+        // get doc comments
+        let hir_id = self.tcx.local_def_id_to_hir_id(id);
+        let attrs = self.hir_map.attrs(hir_id);
+        let mut doc = String::new();
+        for attr in attrs {
+            if let AttrKind::DocComment(kind, sym) = attr.kind {
+                match kind {
+                    CommentKind::Line => {
+                        doc += &format!("///{}\n", sym.to_string());
+                    }
+                    CommentKind::Block => {
+                        doc += &format!("/**{}*/\n", sym.to_string());
+                    }
+                }
+            }
+        }
+
         let data = VisitorData {
             id: id_str,
             fn_name,
+            doc,
             has_ret,
             mod_info: mod_info.clone(),
             visible,

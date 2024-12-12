@@ -123,6 +123,7 @@ impl<'a> FnBlocks<'a> {
     pub fn new(
         id: String,
         name: String,
+        doc: String,
         has_ret: bool,
         fn_source: SourceInfo,
         mod_info: ModInfo,
@@ -142,7 +143,7 @@ impl<'a> FnBlocks<'a> {
             start_node,
             blocks,
             dominators,
-            cond_chains: BrData::new(name, mod_info, visible, fn_source, codes),
+            cond_chains: BrData::new(name, mod_info, visible, fn_source, doc, codes),
             source_map,
             cond_map,
         }
