@@ -231,6 +231,10 @@ impl<'tcx> BranchVisitor<'tcx> {
                     map.insert(expr_source, vec![cond]);
                 }
             }
+            rustc_hir::ExprKind::If(cond_expr, _, _) => {
+                let res = self.handle_expr(cond_expr);
+                map.extend(res);
+            }
             _ => {
                 panic!("Unsupported expression kind: {:?}", expr.kind);
             }
