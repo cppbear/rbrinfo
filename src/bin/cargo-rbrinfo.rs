@@ -142,25 +142,22 @@ fn main() {
     }
 
     if let Some("rbrinfo") = std::env::args().nth(1).as_ref().map(AsRef::as_ref) {
-        // This arm is for when `cargo mir-checker` is called. We call `cargo rustc` for each applicable target,
-        // but with the `RUSTC` env var set to the `cargo-mir-checker` binary so that we come back in the other branch,
-        // and dispatch the invocations to `rustc` and `mir-checker`, respectively.
+        // This arm is for when `cargo rbrinfo` is called. We call `cargo rustc` for each applicable target,
+        // but with the `RUSTC` env var set to the `cargo-rbrinfo` binary so that we come back in the other branch,
+        // and dispatch the invocations to `rustc` and `rbrinfo`, respectively.
         in_cargo_mir_checker();
-    } else if let Some(
-        "/home/chubei/.rustup/toolchains/nightly-2024-07-21-x86_64-unknown-linux-gnu/bin/rustc",
-    ) = std::env::args().nth(1).as_ref().map(AsRef::as_ref)
+    } else if std::env::args()
+        .nth(1)
+        .as_ref()
+        .map(AsRef::as_ref)
+        .is_some_and(|s: &str| s.contains("rustc"))
     {
-        // This arm is executed when `cargo-mir-checker` runs `cargo rustc` with the `RUSTC_WRAPPER` env var set to itself:
-        // dependencies get dispatched to `rustc`, the final library/binary to `mir-checker`.
-        inside_cargo_rustc();
-    } else if let Some(
-        "/Users/chubei/.rustup/toolchains/nightly-2024-07-21-aarch64-apple-darwin/bin/rustc",
-    ) = std::env::args().nth(1).as_ref().map(AsRef::as_ref)
-    {
+        // This arm is executed when `cargo-rbrinfo` runs `cargo rustc` with the `RUSTC_WRAPPER` env var set to itself:
+        // dependencies get dispatched to `rustc`, the final library/binary to `rbrinfo`.
         inside_cargo_rustc();
     } else {
         show_error(
-            "`cargo-rbrinfo` must be called with either `cargo-rbrinfo` or `/home/chubei/.rustup/toolchains/nightly-2024-07-21-x86_64-unknown-linux-gnu/bin/rustc` as first argument.".to_string(),
+            "`cargo-rbrinfo` must be called with either `cargo-rbrinfo` or `rustc` as first argument.".to_string(),
         )
     }
 }
