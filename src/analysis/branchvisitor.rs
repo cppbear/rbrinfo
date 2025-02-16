@@ -18,6 +18,7 @@ pub struct BranchVisitor<'tcx> {
     fn_source: SourceInfo,
     typeck_res: &'tcx rustc_middle::ty::TypeckResults<'tcx>,
     source_cond_map: HashMap<SourceInfo, Vec<Condition>>,
+    panic: bool,
 }
 
 impl<'tcx> BranchVisitor<'tcx> {
@@ -35,6 +36,7 @@ impl<'tcx> BranchVisitor<'tcx> {
             fn_source,
             typeck_res,
             source_cond_map: HashMap::new(),
+            panic: false,
         }
     }
 
@@ -57,6 +59,10 @@ impl<'tcx> BranchVisitor<'tcx> {
             .into_iter()
             .map(|(k, v)| (k, v.into_iter().collect()))
             .collect()
+    }
+
+    pub fn is_panic(&self) -> bool {
+        self.panic
     }
 
     fn is_comparable_literal(expr: &rustc_hir::Expr) -> bool {
@@ -93,15 +99,23 @@ impl<'tcx> BranchVisitor<'tcx> {
         expr_source: SourceInfo,
         lexpr: &'tcx rustc_hir::Expr<'tcx>,
         rexpr: &'tcx rustc_hir::Expr<'tcx>,
-    ) -> HashMap<SourceInfo, Vec<Condition>> {
+    ) -> Result<HashMap<SourceInfo, Vec<Condition>>, ()> {
         let lhs = SourceInfo::from_span(lexpr.span, self.tcx.sess.source_map()).get_string();
         let rhs = SourceInfo::from_span(rexpr.span, self.tcx.sess.source_map()).get_string();
         let cmp_with_int = Self::is_comparable_literal(lexpr) || Self::is_comparable_literal(rexpr);
         let mut map = HashMap::new();
         match op.node {
             rustc_hir::BinOpKind::And | rustc_hir::BinOpKind::Or => {
-                map.extend(self.handle_expr(lexpr));
-                map.extend(self.handle_expr(rexpr));
+                if let Ok(res) = self.handle_expr(lexpr) {
+                    map.extend(res);
+                } else {
+                    return Err(());
+                }
+                if let Ok(res) = self.handle_expr(rexpr) {
+                    map.extend(res);
+                } else {
+                    return Err(());
+                }
             }
             _ => {
                 let kind = match op.node {
@@ -129,26 +143,38 @@ impl<'tcx> BranchVisitor<'tcx> {
                 }
             }
         }
-        map
+        Ok(map)
     }
 
     fn handle_expr(
         &mut self,
         expr: &'tcx rustc_hir::Expr<'tcx>,
-    ) -> HashMap<SourceInfo, Vec<Condition>> {
+    ) -> Result<HashMap<SourceInfo, Vec<Condition>>, ()> {
         let expr_source = SourceInfo::from_span(expr.span, self.tcx.sess.source_map());
         let expr_str = expr_source.get_string();
         let mut map = HashMap::new();
         match expr.kind {
             rustc_hir::ExprKind::DropTemps(temp_expr) => {
-                map.extend(self.handle_expr(temp_expr));
+                if let Ok(res) = self.handle_expr(temp_expr) {
+                    map.extend(res);
+                } else {
+                    return Err(());
+                }
             }
             rustc_hir::ExprKind::Binary(op, lexpr, rexpr) => {
-                map.extend(self.handle_binary(&op, expr_source, lexpr, rexpr));
+                if let Ok(res) = self.handle_binary(&op, expr_source, lexpr, rexpr) {
+                    map.extend(res);
+                } else {
+                    return Err(());
+                }
             }
             rustc_hir::ExprKind::Unary(op, subexpr) => match op {
                 rustc_hir::UnOp::Not => {
-                    map.extend(self.handle_expr(subexpr));
+                    if let Ok(res) = self.handle_expr(subexpr) {
+                        map.extend(res);
+                    } else {
+                        return Err(());
+                    }
                 }
                 _ => {
                     let cond = Condition::Bool(BoolCond::Other(expr_str));
@@ -217,7 +243,9 @@ impl<'tcx> BranchVisitor<'tcx> {
             }
             rustc_hir::ExprKind::Match(expr, arms, match_kind) => match match_kind {
                 rustc_hir::MatchSource::Normal => {
-                    self.handle_match(expr_source.clone(), expr, arms)
+                    if let Err(()) = self.handle_match(expr_source.clone(), expr, arms) {
+                        return Err(());
+                    }
                 }
                 rustc_hir::MatchSource::TryDesugar(_) => self.handle_try(expr),
                 _ => {}
@@ -232,17 +260,21 @@ impl<'tcx> BranchVisitor<'tcx> {
                 }
             }
             rustc_hir::ExprKind::If(cond_expr, _, _) => {
-                let res = self.handle_expr(cond_expr);
-                map.extend(res);
+                if let Ok(res) = self.handle_expr(cond_expr) {
+                    map.extend(res);
+                } else {
+                    return Err(());
+                }
             }
             _ => {
-                panic!("Unsupported expression kind: {:?}", expr.kind);
+                error!("Unsupported expression kind: {:?}", expr.kind);
+                return Err(());
             }
         }
-        map
+        Ok(map)
     }
 
-    fn handle_forloop(&mut self, block: &rustc_hir::Block) {
+    fn handle_forloop(&mut self, block: &rustc_hir::Block) -> Result<(), ()> {
         let stmt = block.stmts[0];
         if let rustc_hir::StmtKind::Expr(expr) = stmt.kind {
             if let rustc_hir::ExprKind::Match(_, arms, match_kind) = expr.kind {
@@ -264,17 +296,20 @@ impl<'tcx> BranchVisitor<'tcx> {
                     self.source_cond_map.insert(range_source, vec![cond]);
                 }
             } else {
-                panic!(
+                error!(
                     "The ExprKind of the first stmt in ForLoop is {:?}.",
                     expr.kind
                 );
+                return Err(());
             }
         } else {
-            panic!(
+            error!(
                 "The StmtKind of the first stmt in ForLoop is {:?}.",
                 stmt.kind
             );
+            return Err(());
         }
+        Ok(())
     }
 
     fn resolve_pat_kind(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> rustc_hir::PatKind<'tcx> {
@@ -290,7 +325,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         &self,
         pat: &'tcx rustc_hir::Pat<'tcx>,
         adt_def: &'tcx rustc_middle::ty::AdtDef<'tcx>,
-    ) -> (SourceInfo, Patt) {
+    ) -> Result<(SourceInfo, Patt), ()> {
         let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         // let pat_ty = self.typeck_res.pat_ty(pat);
@@ -316,7 +351,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                                 pat_str: pat_source.get_string(),
                                 kind: PattKind::Enum(discr),
                             };
-                            (pat_source, patt)
+                            Ok((pat_source, patt))
                         }
                         rustc_hir::def::Res::Def(
                             rustc_hir::def::DefKind::Variant,
@@ -331,10 +366,11 @@ impl<'tcx> BranchVisitor<'tcx> {
                                 pat_str: pat_source.get_string(),
                                 kind: PattKind::Enum(discr),
                             };
-                            (pat_source, patt)
+                            Ok((pat_source, patt))
                         }
                         _ => {
-                            panic!("path.res is: {:?}", path.res);
+                            error!("path.res is: {:?}", path.res);
+                            return Err(());
                         }
                     }
                 }
@@ -366,10 +402,11 @@ impl<'tcx> BranchVisitor<'tcx> {
                         pat_str: pat_source.get_string(),
                         kind: PattKind::Enum(discr),
                     };
-                    (pat_source, patt)
+                    Ok((pat_source, patt))
                 }
                 _ => {
-                    panic!("qpath is: {:?}", qpath);
+                    error!("qpath is: {:?}", qpath);
+                    return Err(());
                 }
             },
             rustc_hir::PatKind::Binding(_, _, _, _) => {
@@ -377,10 +414,11 @@ impl<'tcx> BranchVisitor<'tcx> {
                     pat_str: pat_source.get_string(),
                     kind: PattKind::Other(None),
                 };
-                (pat_source, patt)
+                Ok((pat_source, patt))
             }
             _ => {
-                panic!("pat_kind is: {:?}", pat.kind);
+                error!("pat_kind is: {:?}", pat.kind);
+                return Err(());
             }
         }
     }
@@ -390,17 +428,18 @@ impl<'tcx> BranchVisitor<'tcx> {
         lit_kind: &rustc_ast::LitKind,
         width: rustc_abi::Size,
         neg: bool,
-    ) -> u128 {
+    ) -> Result<u128, ()> {
         match lit_kind {
-            rustc_ast::LitKind::Byte(b) => *b as u128,
-            rustc_ast::LitKind::Char(ch) => *ch as u128,
-            rustc_ast::LitKind::Int(n, _) => width.truncate(if neg {
+            rustc_ast::LitKind::Byte(b) => Ok(*b as u128),
+            rustc_ast::LitKind::Char(ch) => Ok(*ch as u128),
+            rustc_ast::LitKind::Int(n, _) => Ok(width.truncate(if neg {
                 (n.get() as i128).overflowing_neg().0 as u128
             } else {
                 n.get()
-            }),
+            })),
             _ => {
-                panic!("lit_kind is: {:?}", lit_kind);
+                error!("lit_kind is: {:?}", lit_kind);
+                return Err(());
             }
         }
     }
@@ -409,7 +448,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         &self,
         pat: &'tcx rustc_hir::Pat<'tcx>,
         adt_def: &'tcx rustc_middle::ty::AdtDef<'tcx>,
-    ) -> (SourceInfo, Patt) {
+    ) -> Result<(SourceInfo, Patt), ()> {
         let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
         let pat_kind = self.resolve_pat_kind(pat);
@@ -424,7 +463,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                         .unwrap();
                     // println!("Field {}: {:?}", index, field_name);
                     let field_pat_kind = self.resolve_pat_kind(&field.pat);
-                    let mut mir_const = None;
+                    let mut mir_const: Option<u128> = None;
                     match field_pat_kind {
                         rustc_hir::PatKind::Lit(pat_lit) => match pat_lit.kind {
                             rustc_hir::ExprKind::Lit(expr_lit) => match expr_lit.node {
@@ -438,8 +477,13 @@ impl<'tcx> BranchVisitor<'tcx> {
                                     let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                     let width = self.tcx.layout_of(param_ty).unwrap().size;
                                     // println!("Field type layout: {:?}", layout);
-                                    mir_const =
-                                        Some(self.lit_to_constant(&expr_lit.node, width, false));
+                                    if let Ok(n) =
+                                        self.lit_to_constant(&expr_lit.node, width, false)
+                                    {
+                                        mir_const = Some(n);
+                                    } else {
+                                        return Err(());
+                                    }
                                     // println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
@@ -456,11 +500,13 @@ impl<'tcx> BranchVisitor<'tcx> {
                                             let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                             let width = self.tcx.layout_of(param_ty).unwrap().size;
                                             // println!("Field type layout: {:?}", layout);
-                                            mir_const = Some(self.lit_to_constant(
-                                                &expr_lit.node,
-                                                width,
-                                                true,
-                                            ));
+                                            if let Ok(n) =
+                                                self.lit_to_constant(&expr_lit.node, width, true)
+                                            {
+                                                mir_const = Some(n);
+                                            } else {
+                                                return Err(());
+                                            }
                                             // println!(
                                             //     "Literal: -{}, mir_const: {:?}",
                                             //     lit_str, mir_const
@@ -469,7 +515,8 @@ impl<'tcx> BranchVisitor<'tcx> {
                                         _ => {}
                                     }
                                 } else {
-                                    panic!("expr.kind is: {:?}", expr.kind);
+                                    error!("expr.kind is: {:?}", expr.kind);
+                                    return Err(());
                                 }
                             }
                             _ => {}
@@ -488,7 +535,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                     pat_str: pat_source.get_string(),
                     kind: PattKind::StructLike(lit_map),
                 };
-                (pat_source, patt)
+                Ok((pat_source, patt))
             }
             rustc_hir::PatKind::TupleStruct(_, fields, pos) => {
                 let offset = adt_def.all_fields().count() - fields.len();
@@ -499,7 +546,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                         index += offset;
                     }
                     let field_pat_kind = self.resolve_pat_kind(field);
-                    let mut mir_const = None;
+                    let mut mir_const: Option<u128> = None;
                     match field_pat_kind {
                         rustc_hir::PatKind::Lit(pat_lit) => match pat_lit.kind {
                             rustc_hir::ExprKind::Lit(expr_lit) => match expr_lit.node {
@@ -513,8 +560,13 @@ impl<'tcx> BranchVisitor<'tcx> {
                                     let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                     let width = self.tcx.layout_of(param_ty).unwrap().size;
                                     // println!("Field type layout: {:?}", layout);
-                                    mir_const =
-                                        Some(self.lit_to_constant(&expr_lit.node, width, false));
+                                    if let Ok(n) =
+                                        self.lit_to_constant(&expr_lit.node, width, false)
+                                    {
+                                        mir_const = Some(n);
+                                    } else {
+                                        return Err(());
+                                    }
                                     // println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
@@ -531,11 +583,13 @@ impl<'tcx> BranchVisitor<'tcx> {
                                             let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                             let width = self.tcx.layout_of(param_ty).unwrap().size;
                                             // println!("Field type layout: {:?}", layout);
-                                            mir_const = Some(self.lit_to_constant(
-                                                &expr_lit.node,
-                                                width,
-                                                true,
-                                            ));
+                                            if let Ok(n) =
+                                                self.lit_to_constant(&expr_lit.node, width, true)
+                                            {
+                                                mir_const = Some(n);
+                                            } else {
+                                                return Err(());
+                                            }
                                             // println!(
                                             //     "Literal: -{}, mir_const: {:?}",
                                             //     lit_str, mir_const
@@ -544,7 +598,8 @@ impl<'tcx> BranchVisitor<'tcx> {
                                         _ => {}
                                     }
                                 } else {
-                                    panic!("expr.kind is: {:?}", expr.kind);
+                                    error!("expr.kind is: {:?}", expr.kind);
+                                    return Err(());
                                 }
                             }
                             _ => {}
@@ -564,10 +619,11 @@ impl<'tcx> BranchVisitor<'tcx> {
                     pat_str: pat_source.get_string(),
                     kind: PattKind::StructLike(lit_map),
                 };
-                (pat_source, patt)
+                Ok((pat_source, patt))
             }
             _ => {
-                panic!("pat_kind is: {:?}", pat_kind);
+                error!("pat_kind is: {:?}", pat_kind);
+                return Err(());
             }
         }
     }
@@ -576,7 +632,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         &self,
         pat: &'tcx rustc_hir::Pat<'tcx>,
         adt_def: &'tcx rustc_middle::ty::AdtDef<'tcx>,
-    ) -> HashMap<SourceInfo, Patt> {
+    ) -> Result<HashMap<SourceInfo, Patt>, ()> {
         let mut map = HashMap::new();
         let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
@@ -587,7 +643,11 @@ impl<'tcx> BranchVisitor<'tcx> {
         match pat_kind {
             rustc_hir::PatKind::Or(subpats) => {
                 for subpat in subpats {
-                    map.extend(self.handle_adt_pat(subpat, adt_def));
+                    if let Ok(res) = self.handle_adt_pat(subpat, adt_def) {
+                        map.extend(res);
+                    } else {
+                        return Err(());
+                    }
                 }
             }
             rustc_hir::PatKind::Wild => {
@@ -599,22 +659,28 @@ impl<'tcx> BranchVisitor<'tcx> {
             }
             _ => {
                 if adt_def.is_enum() {
-                    let (pat_source, patt) = self.handle_enum_pat(pat, adt_def);
-                    map.insert(pat_source, patt);
+                    if let Ok((pat_source, patt)) = self.handle_enum_pat(pat, adt_def) {
+                        map.insert(pat_source, patt);
+                    } else {
+                        return Err(());
+                    }
                 } else if adt_def.is_struct() {
-                    let (pat_source, patt) = self.handle_struct_pat(pat, adt_def);
-                    map.insert(pat_source, patt);
+                    if let Ok((pat_source, patt)) = self.handle_struct_pat(pat, adt_def) {
+                        map.insert(pat_source, patt);
+                    } else {
+                        return Err(());
+                    }
                 }
             }
         }
-        map
+        Ok(map)
     }
 
     fn handle_tuple_pat(
         &self,
         pat: &'tcx rustc_hir::Pat<'tcx>,
         tuple_def: &'tcx [rustc_middle::ty::Ty<'tcx>],
-    ) -> HashMap<SourceInfo, Patt> {
+    ) -> Result<HashMap<SourceInfo, Patt>, ()> {
         let mut map = HashMap::new();
         let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         // println!("Pattern: {:?}, {}", pat_source, pat_source.get_string());
@@ -622,7 +688,11 @@ impl<'tcx> BranchVisitor<'tcx> {
         match pat_kind {
             rustc_hir::PatKind::Or(subpats) => {
                 for subpat in subpats {
-                    map.extend(self.handle_tuple_pat(subpat, tuple_def));
+                    if let Ok(res) = self.handle_tuple_pat(subpat, tuple_def) {
+                        map.extend(res);
+                    } else {
+                        return Err(());
+                    }
                 }
             }
             rustc_hir::PatKind::Tuple(fields, pos) => {
@@ -634,7 +704,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                         index += offset;
                     }
                     let field_pat_kind = self.resolve_pat_kind(field);
-                    let mut mir_const = None;
+                    let mut mir_const: Option<u128> = None;
                     match field_pat_kind {
                         rustc_hir::PatKind::Lit(pat_lit) => match pat_lit.kind {
                             rustc_hir::ExprKind::Lit(expr_lit) => match expr_lit.node {
@@ -648,8 +718,13 @@ impl<'tcx> BranchVisitor<'tcx> {
                                     let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                     let width = self.tcx.layout_of(param_ty).unwrap().size;
                                     // println!("Field type layout: {:?}", layout);
-                                    mir_const =
-                                        Some(self.lit_to_constant(&expr_lit.node, width, false));
+                                    if let Ok(n) =
+                                        self.lit_to_constant(&expr_lit.node, width, false)
+                                    {
+                                        mir_const = Some(n);
+                                    } else {
+                                        return Err(());
+                                    }
                                     // println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
@@ -666,11 +741,13 @@ impl<'tcx> BranchVisitor<'tcx> {
                                             let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                             let width = self.tcx.layout_of(param_ty).unwrap().size;
                                             // println!("Field type layout: {:?}", layout);
-                                            mir_const = Some(self.lit_to_constant(
-                                                &expr_lit.node,
-                                                width,
-                                                true,
-                                            ));
+                                            if let Ok(n) =
+                                                self.lit_to_constant(&expr_lit.node, width, true)
+                                            {
+                                                mir_const = Some(n);
+                                            } else {
+                                                return Err(());
+                                            }
                                             // println!(
                                             //     "Literal: -{}, mir_const: {:?}",
                                             //     lit_str, mir_const
@@ -679,7 +756,8 @@ impl<'tcx> BranchVisitor<'tcx> {
                                         _ => {}
                                     }
                                 } else {
-                                    panic!("expr.kind is: {:?}", expr.kind);
+                                    error!("expr.kind is: {:?}", expr.kind);
+                                    return Err(());
                                 }
                             }
                             _ => {}
@@ -709,24 +787,32 @@ impl<'tcx> BranchVisitor<'tcx> {
                 map.insert(pat_source, patt);
             }
             _ => {
-                panic!("pat.kind is: {:?}", pat.kind);
+                error!("pat.kind is: {:?}", pat.kind);
+                return Err(());
             }
         }
-        map
+        Ok(map)
     }
 
-    fn handle_other_pat(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> HashMap<SourceInfo, Patt> {
+    fn handle_other_pat(
+        &self,
+        pat: &'tcx rustc_hir::Pat<'tcx>,
+    ) -> Result<HashMap<SourceInfo, Patt>, ()> {
         let mut map = HashMap::new();
         let pat_source = SourceInfo::from_span(pat.span, self.tcx.sess.source_map());
         let pat_kind = self.resolve_pat_kind(pat);
         match pat_kind {
             rustc_hir::PatKind::Or(subpats) => {
                 for subpat in subpats {
-                    map.extend(self.handle_other_pat(subpat));
+                    if let Ok(res) = self.handle_other_pat(subpat) {
+                        map.extend(res);
+                    } else {
+                        return Err(());
+                    }
                 }
             }
             rustc_hir::PatKind::Lit(pat_lit) => {
-                let mut mir_const = None;
+                let mut mir_const: Option<u128> = None;
                 match pat_lit.kind {
                     rustc_hir::ExprKind::Lit(expr_lit) => match expr_lit.node {
                         rustc_ast::LitKind::Byte(_)
@@ -738,7 +824,11 @@ impl<'tcx> BranchVisitor<'tcx> {
                             let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                             let width = self.tcx.layout_of(param_ty).unwrap().size;
                             // println!("Field type layout: {:?}", layout);
-                            mir_const = Some(self.lit_to_constant(&expr_lit.node, width, false));
+                            if let Ok(n) = self.lit_to_constant(&expr_lit.node, width, false) {
+                                mir_const = Some(n);
+                            } else {
+                                return Err(());
+                            }
                             // println!("Literal: {}, mir_const: {:?}", lit_str, mir_const);
                         }
                         _ => {}
@@ -755,14 +845,19 @@ impl<'tcx> BranchVisitor<'tcx> {
                                     let param_ty = ty::ParamEnv::reveal_all().and(lit_ty);
                                     let width = self.tcx.layout_of(param_ty).unwrap().size;
                                     // println!("Field type layout: {:?}", layout);
-                                    mir_const =
-                                        Some(self.lit_to_constant(&expr_lit.node, width, true));
+                                    if let Ok(n) = self.lit_to_constant(&expr_lit.node, width, true)
+                                    {
+                                        mir_const = Some(n);
+                                    } else {
+                                        return Err(());
+                                    }
                                     // println!("Literal: -{}, mir_const: {:?}", lit_str, mir_const);
                                 }
                                 _ => {}
                             }
                         } else {
-                            panic!("expr.kind is: {:?}", expr.kind);
+                            error!("expr.kind is: {:?}", expr.kind);
+                            return Err(());
                         }
                     }
                     _ => {}
@@ -788,7 +883,7 @@ impl<'tcx> BranchVisitor<'tcx> {
                 map.insert(pat_source, patt);
             }
         }
-        map
+        Ok(map)
     }
 
     fn resolve_match_type(&self, tykind: &'tcx TyKind<'tcx>) -> &'tcx TyKind<'tcx> {
@@ -803,7 +898,7 @@ impl<'tcx> BranchVisitor<'tcx> {
         cond_source: SourceInfo,
         expr: &'tcx rustc_hir::Expr<'tcx>,
         arms: &'tcx [rustc_hir::Arm<'tcx>],
-    ) {
+    ) -> Result<(), ()> {
         let match_source = SourceInfo::from_span(expr.span, self.tcx.sess.source_map());
         let match_str = match_source.get_string();
         let expr_ty = self.typeck_res.expr_ty(expr);
@@ -831,16 +926,20 @@ impl<'tcx> BranchVisitor<'tcx> {
                 };
                 cond = MatchCond::new(match_source.clone(), match_str.clone(), match_kind);
                 for arm in arms {
-                    let patt_map = self.handle_adt_pat(arm.pat, adt_def);
                     let mut guard_map = None;
                     if let Some(guard) = arm.guard {
-                        let cond_map = self.handle_expr(guard);
-                        self.source_cond_map.extend(cond_map.clone());
-                        let cond_map = cond_map
-                            .into_iter()
-                            .map(|(source_info, cond)| (source_info, cond.into_iter().collect()))
-                            .collect();
-                        guard_map = Some(cond_map);
+                        if let Ok(cond_map) = self.handle_expr(guard) {
+                            self.source_cond_map.extend(cond_map.clone());
+                            let cond_map = cond_map
+                                .into_iter()
+                                .map(|(source_info, cond)| {
+                                    (source_info, cond.into_iter().collect())
+                                })
+                                .collect();
+                            guard_map = Some(cond_map);
+                        } else {
+                            return Err(());
+                        }
                     }
                     let body_source =
                         SourceInfo::from_span(arm.body.span, self.tcx.sess.source_map());
@@ -848,13 +947,17 @@ impl<'tcx> BranchVisitor<'tcx> {
                     if self.fn_source.contains(&body_source) {
                         source_wrapper = Some(body_source);
                     }
-                    for (source_info, patt) in patt_map {
-                        let arm = Arm {
-                            pat: patt.clone(),
-                            guard: guard_map.clone(),
-                            body_source: source_wrapper.clone(),
-                        };
-                        cond.arms.insert(source_info, arm);
+                    if let Ok(patt_map) = self.handle_adt_pat(arm.pat, adt_def) {
+                        for (source_info, patt) in patt_map {
+                            let arm = Arm {
+                                pat: patt.clone(),
+                                guard: guard_map.clone(),
+                                body_source: source_wrapper.clone(),
+                            };
+                            cond.arms.insert(source_info, arm);
+                        }
+                    } else {
+                        return Err(());
                     }
                 }
             }
@@ -865,16 +968,20 @@ impl<'tcx> BranchVisitor<'tcx> {
                     MatchKind::StructLike(None),
                 );
                 for arm in arms {
-                    let patt_map = self.handle_tuple_pat(arm.pat, tuple_def);
                     let mut guard_map = None;
                     if let Some(guard) = &arm.guard {
-                        let cond_map = self.handle_expr(guard);
-                        self.source_cond_map.extend(cond_map.clone());
-                        let cond_map = cond_map
-                            .into_iter()
-                            .map(|(source_info, cond)| (source_info, cond.into_iter().collect()))
-                            .collect();
-                        guard_map = Some(cond_map);
+                        if let Ok(cond_map) = self.handle_expr(guard) {
+                            self.source_cond_map.extend(cond_map.clone());
+                            let cond_map = cond_map
+                                .into_iter()
+                                .map(|(source_info, cond)| {
+                                    (source_info, cond.into_iter().collect())
+                                })
+                                .collect();
+                            guard_map = Some(cond_map);
+                        } else {
+                            return Err(());
+                        }
                     }
                     let body_source =
                         SourceInfo::from_span(arm.body.span, self.tcx.sess.source_map());
@@ -882,29 +989,37 @@ impl<'tcx> BranchVisitor<'tcx> {
                     if self.fn_source.contains(&body_source) {
                         source_wrapper = Some(body_source);
                     }
-                    for (source_info, patt) in patt_map {
-                        let arm = Arm {
-                            pat: patt.clone(),
-                            guard: guard_map.clone(),
-                            body_source: source_wrapper.clone(),
-                        };
-                        cond.arms.insert(source_info, arm);
+                    if let Ok(patt_map) = self.handle_tuple_pat(arm.pat, tuple_def) {
+                        for (source_info, patt) in patt_map {
+                            let arm = Arm {
+                                pat: patt.clone(),
+                                guard: guard_map.clone(),
+                                body_source: source_wrapper.clone(),
+                            };
+                            cond.arms.insert(source_info, arm);
+                        }
+                    } else {
+                        return Err(());
                     }
                 }
             }
             _ => {
                 cond = MatchCond::new(match_source.clone(), match_str.clone(), MatchKind::Other);
                 for arm in arms {
-                    let patt_map = self.handle_other_pat(arm.pat);
                     let mut guard_map = None;
                     if let Some(guard) = &arm.guard {
-                        let cond_map = self.handle_expr(guard);
-                        self.source_cond_map.extend(cond_map.clone());
-                        let cond_map = cond_map
-                            .into_iter()
-                            .map(|(source_info, cond)| (source_info, cond.into_iter().collect()))
-                            .collect();
-                        guard_map = Some(cond_map);
+                        if let Ok(cond_map) = self.handle_expr(guard) {
+                            self.source_cond_map.extend(cond_map.clone());
+                            let cond_map = cond_map
+                                .into_iter()
+                                .map(|(source_info, cond)| {
+                                    (source_info, cond.into_iter().collect())
+                                })
+                                .collect();
+                            guard_map = Some(cond_map);
+                        } else {
+                            return Err(());
+                        }
                     }
                     let body_source =
                         SourceInfo::from_span(arm.body.span, self.tcx.sess.source_map());
@@ -912,13 +1027,17 @@ impl<'tcx> BranchVisitor<'tcx> {
                     if self.fn_source.contains(&body_source) {
                         source_wrapper = Some(body_source);
                     }
-                    for (source_info, patt) in patt_map {
-                        let arm = Arm {
-                            pat: patt.clone(),
-                            guard: guard_map.clone(),
-                            body_source: source_wrapper.clone(),
-                        };
-                        cond.arms.insert(source_info, arm);
+                    if let Ok(patt_map) = self.handle_other_pat(arm.pat) {
+                        for (source_info, patt) in patt_map {
+                            let arm = Arm {
+                                pat: patt.clone(),
+                                guard: guard_map.clone(),
+                                body_source: source_wrapper.clone(),
+                            };
+                            cond.arms.insert(source_info, arm);
+                        }
+                    } else {
+                        return Err(());
                     }
                 }
             }
@@ -945,6 +1064,7 @@ impl<'tcx> BranchVisitor<'tcx> {
             self.source_cond_map
                 .insert(match_source, vec![Condition::Match(cond)]);
         }
+        Ok(())
     }
 
     fn handle_try(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
@@ -966,18 +1086,25 @@ impl<'tcx> Visitor<'tcx> for BranchVisitor<'tcx> {
     fn visit_expr(&mut self, ex: &'tcx rustc_hir::Expr<'tcx>) -> Self::Result {
         match ex.kind {
             rustc_hir::ExprKind::If(cond_expr, _, _) => {
-                let res = self.handle_expr(cond_expr);
-                self.source_cond_map.extend(res);
+                if let Ok(res) = self.handle_expr(cond_expr) {
+                    self.source_cond_map.extend(res);
+                } else {
+                    self.panic = true;
+                }
             }
             rustc_hir::ExprKind::Loop(block, _, loop_kind, _) => {
                 if let rustc_hir::LoopSource::ForLoop = loop_kind {
-                    self.handle_forloop(block);
+                    if let Err(()) = self.handle_forloop(block) {
+                        self.panic = true;
+                    }
                 }
             }
             rustc_hir::ExprKind::Match(expr, arms, match_kind) => match match_kind {
                 rustc_hir::MatchSource::Normal => {
                     let expr_source = SourceInfo::from_span(ex.span, self.tcx.sess.source_map());
-                    self.handle_match(expr_source, expr, arms)
+                    if let Err(()) = self.handle_match(expr_source, expr, arms) {
+                        self.panic = true;
+                    }
                 }
                 rustc_hir::MatchSource::TryDesugar(_) => self.handle_try(expr),
                 _ => {}
@@ -985,8 +1112,11 @@ impl<'tcx> Visitor<'tcx> for BranchVisitor<'tcx> {
             // FIXME: handle other boolean expressions
             rustc_hir::ExprKind::Binary(op, lexpr, rexpr) => {
                 let expr_source = SourceInfo::from_span(ex.span, self.tcx.sess.source_map());
-                let res = self.handle_binary(&op, expr_source, lexpr, rexpr);
-                self.source_cond_map.extend(res);
+                if let Ok(res) = self.handle_binary(&op, expr_source, lexpr, rexpr) {
+                    self.source_cond_map.extend(res);
+                } else {
+                    self.panic = true;
+                }
             }
             _ => {}
         }

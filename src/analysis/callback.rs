@@ -51,7 +51,6 @@ impl MirCheckerCallbacks {
     fn run_analysis<'tcx, 'compiler>(&mut self, tcx: TyCtxt<'tcx>) {
         let hir_map = tcx.hir();
         let mut visitor = HirVisitor::new(tcx, hir_map);
-        // hir_map.visit_all_item_likes_in_crate(&mut visitor);
         hir_map.walk_toplevel_module(&mut visitor);
         let result = visitor.move_result();
 

@@ -155,6 +155,10 @@ impl<'tcx> Visitor<'tcx> for HirVisitor<'tcx> {
             self.tcx.typeck(hir.id().hir_id.owner),
         );
         intravisit::walk_body::<BranchVisitor>(&mut visitor, &hir);
+        if visitor.is_panic() {
+            error!("Skip because panic occurs during analysis");
+            return;
+        }
         visitor.output_map();
 
         // check visibility
